@@ -181,10 +181,11 @@ const SECRETISH = /\b(?:AWS_SECRET_ACCESS_KEY|PRIVATE KEY|client_secret|BEGIN OP
 export function memoryCandidates(repo: string, opts: { home?: string; offered?: Set<string> } = {}): MemoryCandidate[] {
   const known = knownText(repo);
   const team: MemoryCandidate[] = [];
-  const own: MemoryCandidate[] = [];
   const titles = new Set<string>();
   for (const note of memoryNotes(repo, opts.home)) {
-    if (note.type === "user") continue;
+    // Only what the team can use: Claude already reads the rest of its memory
+    // on this machine, so offering it again as a personal learning repeats it.
+    if (note.type !== "project" && note.type !== "reference") continue;
     if (opts.offered?.has(offerKey(note))) continue;
     const title = memoryTitle(note);
     const key = title.toLowerCase();
@@ -193,12 +194,11 @@ export function memoryCandidates(repo: string, opts: { home?: string; offered?: 
     if (SECRETISH.test(body)) continue;
     if (alreadySaid(known, title, body)) continue;
     titles.add(key);
-    const shared = note.type === "project" || note.type === "reference";
-    const touches = shared ? codeAnchors(repo, `${note.description}\n${note.body}`) : [];
-    const c: MemoryCandidate = { title, body, forTeam: shared && touches.length > 0, touches, path: note.path, updated: note.updated };
-    (c.forTeam ? team : own).push(c);
+    const touches = codeAnchors(repo, `${note.description}\n${note.body}`);
+    if (!touches.length) continue;
+    team.push({ title, body, forTeam: true, touches, path: note.path, updated: note.updated });
   }
-  return [...team, ...own];
+  return team;
 }
 
 /** A note is offered again only once it changes. */

@@ -93,7 +93,7 @@ test("a fresh clone finds the memory and past sessions of another checkout of th
   assert.equal(sessionFiles(sameRepoRoots(clone, home), home).filter((f) => f.endsWith("s1.jsonl")).length, 1);
 });
 
-test("project notes tied to code that exists are offered for the team; the rest, and feedback, are the person's own; user notes never", () =>
+test("only project and reference notes tied to code that exists are offered, for the team: Claude already reads the rest", () =>
   withTrailHome(() => {
     const repo = gitRepo("memory-offer", "git@github.com:acme/api.git");
     mkdirSync(join(repo, "src"), { recursive: true });
@@ -107,11 +107,7 @@ test("project notes tied to code that exists are offered for the team; the rest,
     const got = memoryCandidates(repo, { home });
     assert.deepEqual(
       got.map((c) => [c.title, c.forTeam]),
-      [
-        ["Retries stay at 4 because the gateway times out at 30 s", true],
-        ["Deploys run from the ops laptop on Fridays", false],
-        ["Keep replies short", false],
-      ],
+      [["Retries stay at 4 because the gateway times out at 30 s", true]],
     );
     assert.deepEqual(got[0]!.touches, ["src/retry.ts"]);
   }));

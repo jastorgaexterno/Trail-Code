@@ -1689,7 +1689,7 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
       const home = notesHome.get(repo);
       if (home) {
         const learnings = listNotes(repo, { branches: false }).filter((n) => n.scope === "repo");
-        if (learnings.length === 0) console.error(`✓ learnings  ${LEARNINGS_DIR}/ · sessions that take real digging leave one there, for your whole team`);
+        if (learnings.length === 0) console.error(`✓ learnings  ${LEARNINGS_DIR}/ · a session that fixes a bug, takes a correction or opens a PR leaves one there, for your whole team`);
         else console.error(`✓ learnings  ${learnings.length} in ${LEARNINGS_DIR}/, from ${new Set(learnings.map((n) => n.author || "someone")).size} ${new Set(learnings.map((n) => n.author)).size === 1 ? "person" : "people"}`);
       }
     }
