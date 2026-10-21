@@ -351,7 +351,7 @@ test("the learnings picker ticks the team's learnings, leaves the person's own u
   ]);
   assert.deepEqual(keptLearnings(state), [0, 2]);
   const shown = renderPicker(state, false, { title: 'keep:' });
-  assert.match(shown, /\[x\] Return a 500 when db\.query fails\s+for your team · flagged in review on PR #41, #38/);
+  assert.match(shown, /\[x\] Return a 500 when db\.query fails\s+for your team · from review on PR #41, #38/);
   assert.match(shown, /\[ \] Say what you understood first\s+just for you · told Claude in 4 sessions/);
   assert.match(shown, /\[x\] Run go test with -race\s+for your team · from your Claude's memory of this repo/);
   state = reducePicker(reducePicker(state, 'down'), 'space');
@@ -364,5 +364,5 @@ test("the picker's title says the team's learnings are new to teammates, or that
   assert.match(learningsTitle([{ title: 'a', forTeam: true, prs: [1, 2] }, { title: 'b', forTeam: false, sessions: 2 }]), /your teammates' Claude doesn't know these yet/);
   assert.match(learningsTitle([{ title: 'b', forTeam: false, sessions: 2 }]), /you told Claude these more than once/);
   const many = renderPicker(learningsPickerState([{ title: 'a', forTeam: true, prs: [9, 8, 7, 6, 5] }]), false, { title: null });
-  assert.match(many, /flagged in review on PR #9, #8, #7 \+2/);
+  assert.match(many, /from review on PR #9, #8, #7 \+2/);
 });

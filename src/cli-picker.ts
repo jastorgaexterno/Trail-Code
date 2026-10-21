@@ -413,7 +413,7 @@ export interface LearningChoice {
   forTeam: boolean;
   /** Past sessions it was said in, for one from the person's sessions. */
   sessions?: number;
-  /** Merged PRs reviewers flagged it on, for one from PR reviews. */
+  /** Merged PRs whose review it came from, for one from PR reviews. */
   prs?: number[];
   /** From Claude Code's memory of the repo on this machine. */
   memory?: boolean;
@@ -423,7 +423,7 @@ export interface LearningChoice {
 function learningSource(it: LearningChoice): string {
   if (it.prs?.length) {
     const shown = it.prs.slice(0, 3).map((n) => `#${n}`).join(", ");
-    return `flagged in review on PR ${shown}${it.prs.length > 3 ? ` +${it.prs.length - 3}` : ""}`;
+    return `from review on PR ${shown}${it.prs.length > 3 ? ` +${it.prs.length - 3}` : ""}`;
   }
   if (it.memory) return "from your Claude's memory of this repo";
   return `told Claude in ${it.sessions ?? 0} sessions`;

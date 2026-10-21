@@ -1634,13 +1634,13 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
         if (saved.length) {
           const n = saved.length;
           const what = n < offered ? `kept ${n} of the ${offered} things` : `learned ${n} thing${n === 1 ? "" : "s"}`;
-          console.error(`✓ ${what} reviewers flagged on more than one PR, from the last ${result.prs} merged PRs here`);
+          console.error(`✓ ${what} reviewers made authors change, from the last ${result.prs} merged PRs here`);
           // saveReviewFindings keeps the findings' order.
-          saved.forEach((note, i) => console.error(`    for your team · flagged in review on ${kept[i]?.prs.length ?? 2} PRs: ${note.title}`));
+          saved.forEach((note, i) => console.error(`    for your team · from review on ${(kept[i]?.prs ?? []).map((n) => `#${n}`).join(", ")}: ${note.title}`));
         } else if (cancelled) {
-          console.error(`· saved none of the ${offered} things reviewers flagged; ${cmd("graft init")} again asks again`);
+          console.error(`· saved none of the ${offered} things reviewers made authors change; ${cmd("graft init")} again asks again`);
         } else if (offered) {
-          console.error(`· kept none of the ${offered} things reviewers flagged`);
+          console.error(`· kept none of the ${offered} things reviewers made authors change`);
         } else if (result.reason === "failed") {
           console.error(`· couldn't read PR reviews this time; ${cmd("graft init")} again tries again`);
         }
