@@ -21,7 +21,8 @@ import { readJson, writeJsonAtomic } from "../util/state.js";
 import { askClaude, claudeBin, COLD_START_MODEL, norm, placeQuotes, scrub, type QuoteSource } from "./cold-start.js";
 import { noteAuthor } from "./git-facts.js";
 import { ensureRepoHome } from "./home.js";
-import { listNotes, mentionedFiles, shortDate, writeNote, type Note } from "./notes.js";
+import { listNotes, shortDate, writeNote, type Note } from "./notes.js";
+import { alreadySaid, codeAnchors, knownText } from "./team-check.js";
 
 /** One merged PR with what its reviewers wrote, oldest comment first. */
 export interface ReviewedPR {
@@ -42,6 +43,10 @@ export interface ReviewFinding {
   /** YYYY-MM-DD the newest of them was merged. */
   last: string;
   quotes: string[];
+  /** Files the cited inline comments were on. */
+  paths?: string[];
+  /** The code it is about, once {@link anchoredReviews} has checked it exists. */
+  touches?: string[];
 }
 
 export interface ReviewResult {
@@ -278,7 +283,18 @@ export function verifyReviews(raw: RawReviewFinding[], prs: ReviewedPR[]): Revie
     const evidence = (f.evidence ?? []).map((ev) => ({ cited: byNumber.get(String(ev.pr ?? "").replace(/^#/, "").trim()), quote: ev.quote }));
     const { places, quotes } = placeQuotes(evidence, sources);
     if (places.length < 2) continue;
-    out.push({ title: scrub(title).slice(0, 80), body: scrub(body), prs: places.map((p) => Number(p.id)), last: places[0]!.at.slice(0, 10), quotes });
+    // The files the quoted inline comments sit on: what the finding is about.
+    const said = quotes.map(norm);
+    const paths = [
+      ...new Set(
+        prs
+          .filter((pr) => places.some((p) => p.id === String(pr.number)))
+          .flatMap((pr) => pr.comments)
+          .filter((c) => c.path && said.some((q) => norm(c.text).includes(q)))
+          .map((c) => c.path!),
+      ),
+    ];
+    out.push({ title: scrub(title).slice(0, 80), body: scrub(body), prs: places.map((p) => Number(p.id)), last: places[0]!.at.slice(0, 10), quotes, paths });
   }
   return out.sort((a, b) => b.prs.length - a.prs.length || b.last.localeCompare(a.last));
 }
@@ -356,6 +372,25 @@ export function beginReviewRead(repo: string, env: NodeJS.ProcessEnv = process.e
   }
 }
 
+/**
+ * The findings fit to offer the team, in order: each tied to code that exists
+ * now (a file it names, a file its quoted comments were on, or a function the
+ * graph knows), with `touches` set to it, and not already said in CLAUDE.md,
+ * AGENTS.md or a learning. A finding that names no code, like "comments must
+ * match the code", is left out. Same repo, same answer: init's picker and
+ * {@link finishReviewRead} both call it.
+ */
+export function anchoredReviews(repo: string, findings: ReviewFinding[]): ReviewFinding[] {
+  const known = knownText(repo);
+  const out: ReviewFinding[] = [];
+  for (const f of findings) {
+    const touches = codeAnchors(repo, `${f.title}\n${f.body}`, f.paths);
+    if (!touches.length || alreadySaid(known, f.title, f.body)) continue;
+    out.push({ ...f, touches });
+  }
+  return out;
+}
+
 /** Each finding as a standing learning in `.trail/learnings/`. The body says which PRs it came from. */
 export function saveReviewFindings(repo: string, findings: ReviewFinding[], author = noteAuthor(repo), date = new Date().toISOString().slice(0, 10)): Note[] {
   return findings.map((f) =>
@@ -366,7 +401,7 @@ export function saveReviewFindings(repo: string, findings: ReviewFinding[], auth
         author,
         date,
         body: `${f.body.trim()}\n\n_Flagged in review on ${f.prs.length} PRs here (${f.prs.map((n) => `#${n}`).join(", ")}), most recently on ${shortDate(f.last)}._`,
-        touches: mentionedFiles(repo, f.body),
+        touches: f.touches ?? codeAnchors(repo, f.body, f.paths),
         standing: true,
       },
       "repo",
@@ -386,18 +421,20 @@ export async function finishReviewRead(
   keep?: (findings: ReviewFinding[]) => Promise<ReviewFinding[] | null>,
 ): Promise<{ result: ReviewResult; saved: Note[]; kept: ReviewFinding[]; cancelled: boolean }> {
   const result = await read.result;
-  const chosen = result.findings.length && keep ? await keep(result.findings) : result.findings;
+  const findings = anchoredReviews(repo, result.findings);
+  const chosen = findings.length && keep ? await keep(findings) : findings;
   const kept = chosen ?? [];
   const saved = kept.length ? saveReviewFindings(repo, kept) : [];
-  const outcome = chosen === null ? "cancelled" : result.findings.length ? "found" : (result.reason ?? "none_found");
-  if (outcome === "found" || outcome === "none_found") writeJsonAtomic(readMark(repo), { at: Date.now(), model: result.model, saved: saved.length }, true);
+  const outcome = chosen === null ? "cancelled" : findings.length ? "found" : result.findings.length ? "none_anchored" : (result.reason ?? "none_found");
+  if (outcome === "found" || outcome === "none_found" || outcome === "none_anchored") writeJsonAtomic(readMark(repo), { at: Date.now(), model: result.model, saved: saved.length }, true);
   track(
     "cold_start",
     {
       source: "reviews",
       outcome,
       reviews_bucket: countBucket(result.reviewed),
-      offered_bucket: countBucket(result.findings.length),
+      offered_bucket: countBucket(findings.length),
+      filtered_bucket: countBucket(result.findings.length - findings.length),
       picked_bucket: countBucket(saved.length),
       duration_bucket: durationBucket(result.durationMs),
       model: result.model,

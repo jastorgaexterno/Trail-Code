@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { finishReviewRead, ghReady, reviewDigest, reviewedPRs, reviewWords, verifyReviews, type ReviewedPR, type ReviewFinding, type ReviewResult } from "../src/notes/pr-reviews.js";
+import { anchoredReviews, finishReviewRead, ghReady, reviewDigest, reviewedPRs, reviewWords, verifyReviews, type ReviewedPR, type ReviewFinding, type ReviewResult } from "../src/notes/pr-reviews.js";
 import { ensureRepoHome } from "../src/notes/home.js";
 import { parseNote } from "../src/notes/notes.js";
 import { claudeProjectDir } from "../src/notes/session-cost.js";
@@ -126,6 +126,7 @@ test("a review finding is kept only when its quotes are on two PRs, and trail co
   assert.equal(out[0]!.title, "Return a 500 when db.query fails in src/api");
   assert.deepEqual(out[0]!.prs, [41, 38]);
   assert.equal(out[0]!.last, "2026-10-10");
+  assert.deepEqual(out[0]!.paths, ["src/api/orders.ts", "src/api/users.ts"], "the files the quoted inline comments are on");
 });
 
 /* ---- trail init, end to end, with stand-ins for Claude Code and gh on PATH ---- */
@@ -253,19 +254,24 @@ const reviewLearnings = (repo: string) =>
 test("trail init learns what reviewers flagged on two PRs, beside the session learnings, once per repo", { skip: process.platform === "win32" }, () => {
   const home = mkdtempSync(join(tmpdir(), "reviews-init-home-"));
   const repo = githubRepo("reviews-init");
+  // The code the reviews were about: a finding tied to no code that exists isn't the team's.
+  mkdirSync(join(repo, "src", "api"), { recursive: true });
+  writeFileSync(join(repo, "src", "api", "orders.ts"), "export const orders = 1;\n");
   pastSessions(repo, home);
   const { bin, log } = fakeTools(true);
 
   const first = initRun(repo, home, bin);
   assert.equal(first.status, 0, first.err);
   assert.match(first.err, /· reading review comments on this repo's merged PRs for what reviewers keep flagging/);
-  assert.match(first.err, /✓ learned 1 thing you told Claude more than once, from your last 2 sessions here\n {4}for your team · told Claude in 2 sessions: Run go test with -race before pushing\n/);
-  assert.match(first.err, /✓ learned 1 thing reviewers flagged on more than one PR, from the last 4 merged PRs here\n {4}for your team · flagged in review on 2 PRs: Return a 500 when db\.query fails in src\/api\n· Claude follows them from your next session\n🌱 Commit what you learned/);
+  assert.match(first.err, /✓ learned 1 thing reviewers flagged on more than one PR, from the last 4 merged PRs here\n {4}for your team · flagged in review on 2 PRs: Return a 500 when db\.query fails in src\/api\n/);
+  assert.match(first.err, /✓ learned 1 thing you told Claude more than once, from your last 2 sessions here, just for you\n {4}just for you  · told Claude in 2 sessions: Run go test with -race before pushing\n· Claude follows them from your next session\n🌱 Commit what you learned/);
+  assert.match(first.err, /→ 1 team learning in \.trail\/learnings\/ isn't committed yet\. Ask the user: "Commit it so your teammates' Claude starts from it\? \(yes \/ no\)"/, "run without a terminal, init ends by telling the agent to ask");
   assert.equal(first.err.match(/Claude follows them/g)?.length, 1, "one closing line for both");
 
   const [learning] = reviewLearnings(repo);
   assert.ok(learning);
   assert.equal(learning.standing, true);
+  assert.deepEqual(learning.touches, ["src/api/orders.ts"], "the file the quoted comment was on");
   assert.match(learning.body, /_Flagged in review on 2 PRs here \(#41, #38\), most recently on Oct 10\._/);
 
   // What Claude was sent: reviewers' comments, scrubbed, with no names, bots or author replies.
@@ -310,8 +316,17 @@ test("gh isn't asked at all without a GitHub remote, and a missing gh means no r
 
 /* ---- ticking which review learnings to keep ---- */
 
-function flagged(title: string): ReviewFinding {
-  return { title, body: "## Decided\n- " + title + ".", prs: [41, 38], last: "2026-10-10", quotes: [] };
+function flagged(title: string, paths: string[] = ["src/api/users.ts"]): ReviewFinding {
+  return { title, body: "## Decided\n- " + title + ".", prs: [41, 38], last: "2026-10-10", quotes: [], paths };
+}
+
+/** A repo with the files the review findings are about. */
+function reviewedRepo(name: string): string {
+  const repo = tmpRepo(name);
+  spawnSync("git", ["init", "-q"], { cwd: repo });
+  mkdirSync(join(repo, "src", "api"), { recursive: true });
+  writeFileSync(join(repo, "src", "api", "users.ts"), "export const users = 1;\n");
+  return repo;
 }
 
 function reviewReadWith(findings: ReviewFinding[]) {
@@ -333,23 +348,39 @@ async function withTrailHome(name: string, run: () => Promise<void>): Promise<vo
 
 test("init saves only the review learnings the person kept, and remembers the reviews were read", () =>
   withTrailHome("review-keep-home-", async () => {
-    const repo = tmpRepo("review-keep-some");
-    spawnSync("git", ["init", "-q"], { cwd: repo });
+    const repo = reviewedRepo("review-keep-some");
     const all = [flagged("Return a 500 when db.query fails"), flagged("Add a changelog entry"), flagged("Name migrations by date")];
     const { saved, kept, cancelled } = await finishReviewRead(repo, reviewReadWith(all), async (f) => [f[0]!, f[2]!]);
     assert.equal(cancelled, false);
     assert.deepEqual(kept.map((f) => f.title), ["Return a 500 when db.query fails", "Name migrations by date"]);
     assert.deepEqual(saved.map((n) => [n.title, n.scope]), [["Return a 500 when db.query fails", "repo"], ["Name migrations by date", "repo"]]);
+    assert.deepEqual(saved[0]!.touches, ["src/api/users.ts"], "touches the file the review was on, so Claude gets it when it opens that file");
     assert.ok(existsSync(join(ensureRepoHome(repo).place.dir, "pr-reviews.json")), "read once per repo");
   }));
 
 test("cancelling the pick saves no review learning, and the next init asks again", () =>
   withTrailHome("review-keep-none-home-", async () => {
-    const repo = tmpRepo("review-keep-cancel");
-    spawnSync("git", ["init", "-q"], { cwd: repo });
+    const repo = reviewedRepo("review-keep-cancel");
     const { saved, cancelled } = await finishReviewRead(repo, reviewReadWith([flagged("Add a changelog entry")]), async () => null);
     assert.equal(cancelled, true);
     assert.equal(saved.length, 0);
     assert.equal(existsSync(join(repo, ".trail", "learnings")) && readdirSync(join(repo, ".trail", "learnings")).some((f) => f.endsWith(".md")), false);
     assert.equal(existsSync(join(ensureRepoHome(repo).place.dir, "pr-reviews.json")), false, "not marked read");
+  }));
+
+test("a review finding that names no code that exists, or that CLAUDE.md already says, isn't offered", () =>
+  withTrailHome("review-anchor-home-", async () => {
+    const repo = reviewedRepo("review-anchor");
+    writeFileSync(join(repo, "CLAUDE.md"), "# Rules\n\n- Every handler in src/api returns a 500 when the database query fails, and logs the error.\n");
+    const out = anchoredReviews(repo, [
+      flagged("Comments must match the code", []),
+      flagged("Return a 500 when the database query fails in every handler", ["src/api/users.ts"]),
+      flagged("Validate the page size in listUsers", ["src/api/gone.ts", "src/api/users.ts"]),
+    ]);
+    assert.deepEqual(out.map((f) => f.title), ["Validate the page size in listUsers"]);
+    assert.deepEqual(out[0]!.touches, ["src/api/users.ts"], "only files that still exist");
+    const { result, saved } = await finishReviewRead(repo, reviewReadWith([flagged("Comments must match the code", [])]));
+    assert.equal(saved.length, 0);
+    assert.equal(result.findings.length, 1);
+    assert.ok(existsSync(join(ensureRepoHome(repo).place.dir, "pr-reviews.json")), "still read once: the same reviews would give the same answer");
   }));
