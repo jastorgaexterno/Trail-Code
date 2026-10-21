@@ -16,6 +16,9 @@ import { listNotes, mentionedFiles } from "./notes.js";
 
 const TOUCH_LIMIT = 10;
 
+/** `foo_test.go`, `foo.test.ts`, `test/…`, `__tests__/…`, `spec/…`. */
+const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|spec)\/|[._-](?:test|spec)\.[A-Za-z]+$|_test\.go$/;
+
 /** `Foo`, `Foo.bar`, `foo_bar()` in backticks: names a note can give a symbol by. */
 const TICKED = /`([A-Za-z_$][\w$]*(?:(?:\.|::|#)[A-Za-z_$][\w$]*)*)(?:\(\))?`/g;
 
@@ -48,7 +51,12 @@ export function codeAnchors(repo: string, text: string, paths: string[] = []): s
     list.push(n.id);
     byName.set(n.name, list);
   }
-  for (const ids of byName.values()) if (ids.length <= 3) for (const id of ids) add(id);
+  for (const ids of byName.values()) {
+    // A test's fake of a function isn't what the note is about, when the real one is there.
+    const real = ids.filter((id) => !TEST_PATH.test(id.split("#")[0]!));
+    const pick = real.length ? real : ids;
+    if (pick.length <= 3) for (const id of pick) add(id);
+  }
   return out;
 }
 
