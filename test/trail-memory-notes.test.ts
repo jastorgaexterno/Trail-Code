@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sameRepoRoots, sessionFiles } from "../src/notes/cold-start.js";
 import { remoteKey } from "../src/notes/home.js";
-import { finishMemoryRead, memoryBody, memoryCandidates, memoryDirs, memoryTitle, offeredBefore, readMemoryNote } from "../src/notes/memory-notes.js";
+import { finishMemoryRead, memoryBody, memoryCandidates, memoryDirs, memoryTitle, offeredBefore, readMemoryNote, readsAsLearning } from "../src/notes/memory-notes.js";
 import { claudeProjectDir } from "../src/notes/session-cost.js";
 import { alreadySaid, codeAnchors, knownText } from "../src/notes/team-check.js";
 import { tmpRepo } from "./helpers.js";
@@ -160,4 +160,11 @@ test("code anchors are files that exist and named functions the graph knows; a m
   writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n");
   assert.deepEqual(codeAnchors(repo, "See src/a.ts and src/gone.ts.", ["src/gone2.ts"]), ["src/a.ts"]);
   assert.deepEqual(codeAnchors(repo, "Comments must match the code."), []);
+});
+
+test("a status write-up or a long note with no why stays in Claude's memory", () => {
+  assert.equal(readsAsLearning("Keep MAX at 4 in src/retry.ts.\n\n**Why:** the gateway times out at 30 s."), true);
+  assert.equal(readsAsLearning("**Status (2026-04-20)**\n\nShipped on branch `feature/x` as commit c624."), false);
+  assert.equal(readsAsLearning(Array(200).fill("word").join(" ")), false);
+  assert.equal(readsAsLearning(Array(200).fill("word").join(" ") + "\n\n**Why:** because."), true);
 });

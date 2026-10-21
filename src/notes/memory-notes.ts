@@ -168,15 +168,24 @@ export function memoryBody(note: Pick<MemoryNote, "body">): string {
   return scrub(out);
 }
 
+/**
+ * A short fact with its reason, not a work log. Status write-ups, and long
+ * notes with no **Why:**, stay in Claude's memory: as a learning they'd read
+ * as a diary, and be wrong by next week.
+ */
+export function readsAsLearning(body: string): boolean {
+  if (/\*\*Status\b|^Status:|Shipped on branch|SLA breach|\bnot merged yet\b/im.test(body)) return false;
+  return body.split(/\s+/).filter(Boolean).length <= 150 || /\*\*Why:?\*\*/i.test(body);
+}
+
 /** Still looks like a credential after scrubbing, or names where one lives: not worth the risk of committing. */
 const SECRETISH = /\b(?:AWS_SECRET_ACCESS_KEY|PRIVATE KEY|client_secret|BEGIN OPENSSH)\b|\[redacted\]/;
 
 /**
- * What `trail init` offers from Claude Code's memory of this repo, team rows
- * first: project and reference notes tied to code that exists now and not
- * already said, then the person's own (the other project and reference
- * notes, and feedback). `user` notes, and notes offered before and unchanged
- * since, are left out.
+ * What `trail init` offers from Claude Code's memory of this repo, for the
+ * team: project and reference notes that read as a learning, are tied to code
+ * that exists now, and aren't already said. Notes offered before and
+ * unchanged since are left out.
  */
 export function memoryCandidates(repo: string, opts: { home?: string; offered?: Set<string> } = {}): MemoryCandidate[] {
   const known = knownText(repo);
@@ -187,6 +196,7 @@ export function memoryCandidates(repo: string, opts: { home?: string; offered?: 
     // on this machine, so offering it again as a personal learning repeats it.
     if (note.type !== "project" && note.type !== "reference") continue;
     if (opts.offered?.has(offerKey(note))) continue;
+    if (!readsAsLearning(note.body)) continue;
     const title = memoryTitle(note);
     const key = title.toLowerCase();
     if (titles.has(key)) continue;
