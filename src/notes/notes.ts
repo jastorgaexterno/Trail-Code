@@ -155,7 +155,8 @@ function readNotesIn(notesDir: string, checkout: string, here: string, scope: Le
 
 /** The file name a note is known by, wherever it sits: one learning on a branch and in the tree is one learning. */
 export function noteName(n: Note): string {
-  return n.path.slice(Math.max(n.path.lastIndexOf("/"), n.path.lastIndexOf(":")) + 1);
+  // A Windows path's last `\\`, or a branch learning's `<ref>:<path>`.
+  return n.path.slice(Math.max(n.path.lastIndexOf("/"), n.path.lastIndexOf("\\"), n.path.lastIndexOf(":")) + 1);
 }
 
 /**

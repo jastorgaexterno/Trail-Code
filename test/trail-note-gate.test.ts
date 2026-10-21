@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gateNote, symbolCandidates, type GateInput } from "../src/notes/note-gate.js";
-import { listNotes, parseNote, type Note } from "../src/notes/notes.js";
+import { listNotes, noteName, parseNote, type Note } from "../src/notes/notes.js";
 import { homeEnv, tmpRepo } from "./helpers.js";
 
 process.env.TRAIL_HOME = mkdtempSync(join(tmpdir(), "gate-trail-home-"));
@@ -36,6 +36,9 @@ const input = (over: Partial<GateInput> = {}): GateInput => ({
 function existing(over: Partial<Note> = {}): Note {
   return { path: "/r/.trail/learnings/2026-10-15-codeql-priya.md", title: "CodeQL actions must be pinned together", author: "Priya", date: "2026-10-15", touches: [".github/workflows/codeql.yml"], body: GOOD, scope: "repo", ...over };
 }
+
+/** A literal string as a regex: every special character escaped, backslash included. */
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test("a learning that names code, says why and isn't status passes", () => {
   assert.deepEqual(gateNote(input(), []), { problems: [], warnings: [] });
@@ -114,7 +117,7 @@ test("trail note refuses with the fix, saves with --anyway, and takes over with 
 
   const twin = run(["note", d, "--title", "Rotated PDFs need per-page rotation", "--touches", "internal/ocr/bbox.go"], home, BBOX);
   assert.equal(twin.status, 1);
-  assert.match(twin.err, new RegExp(`add --replaces ${first!.replace(/\./g, "\\.")}`));
+  assert.match(twin.err, new RegExp(`add --replaces ${escapeRe(first!)}`));
 
   const missing = run(["note", d, "--title", "x", "--replaces", "nope.md"], home, BBOX);
   assert.equal(missing.status, 1);
@@ -122,7 +125,7 @@ test("trail note refuses with the fix, saves with --anyway, and takes over with 
 
   const replacing = run(["note", d, "--title", "Rotated PDFs need per-page rotation, mirrored too", "--touches", "internal/ocr/bbox.go", "--replaces", first!], home, `${BBOX}- Mirror after rotating, otherwise 270° pages flip.\n`);
   assert.equal(replacing.status, 0, replacing.err);
-  assert.match(replacing.out, new RegExp(`· takes over from ${first!.replace(/\./g, "\\.")}, which stays as the record`));
+  assert.match(replacing.out, new RegExp(`· takes over from ${escapeRe(first!)}, which stays as the record`));
   const files = readdirSync(join(d, ".trail", "learnings"));
   assert.equal(files.length, 2, "the old learning stays");
   const listed = listNotes(d, { branches: false }).map((n) => n.title);
@@ -130,4 +133,9 @@ test("trail note refuses with the fix, saves with --anyway, and takes over with 
 
   const anyway = run(["note", d, "--title", "Sprint notes", "--anyway"], home, "Ship it today.\n");
   assert.equal(anyway.status, 0, anyway.err);
+});
+
+test("a learning's file name is right from a Windows path and a branch ref", () => {
+  assert.equal(noteName({ path: "D:\\a\\repo\\.trail\\learnings\\2026-10-21-x.md" } as Note), "2026-10-21-x.md");
+  assert.equal(noteName({ path: "origin/feat/y:.trail/learnings/2026-10-21-y.md" } as Note), "2026-10-21-y.md");
 });
