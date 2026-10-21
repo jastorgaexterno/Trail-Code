@@ -50,6 +50,10 @@ export interface Note {
    * task: what the user kept having to tell Claude. The session-start hook
    * lists these up front, since no single task would bring them up. */
   standing?: boolean;
+  /** The file name of an earlier learning this one takes over from. The old
+   * file stays, as the record of what that session knew, but `listNotes`
+   * reads this one instead. */
+  replaces?: string;
   /** Found on a teammate's pushed branch (`origin/kumar/jitter`) rather than in
    * this checkout. `path` is then `<ref>:.trail/learnings/<name>`, readable
    * with `git show`, and the whole body travels with the note. */
@@ -83,6 +87,7 @@ export function renderNote(n: Omit<Note, "path">): string {
   if (n.cost?.tokens !== undefined) cost.push(`tokens: ${n.cost.tokens}`);
   if (cost.length) fm.push(`cost: { ${cost.join(", ")} }`);
   if (n.standing) fm.push("standing: true");
+  if (n.replaces) fm.push(`replaces: ${scalar(n.replaces)}`);
   if (n.touches.length) fm.push("touches:", ...n.touches.map((t) => `  - ${scalar(t)}`));
   fm.push("---", "");
   return `${fm.join("\n")}\n${n.body.trim()}\n`;
@@ -116,6 +121,7 @@ export function parseNote(text: string, path: string): Note | null {
     touches: Array.isArray(d.touches) ? d.touches.map(String) : [],
     body: parsed.content.trim(),
     ...(d.standing === true ? { standing: true } : {}),
+    ...(typeof d.replaces === "string" && d.replaces.trim() ? { replaces: d.replaces.trim() } : {}),
   };
 }
 
@@ -160,7 +166,8 @@ export function noteName(n: Note): string {
  * repos, its own and each repo's. Touches come back relative to `dir`, so
  * they line up with a query run there. `children: false` leaves a folder's
  * repos out. One file name is one learning: the working tree's copy wins,
- * then this machine's, then a branch's. Unreadable files are skipped.
+ * then this machine's, then a branch's. A learning another one `replaces` is
+ * left out. Unreadable files are skipped.
  */
 export function listNotes(dir: string, opts: { children?: boolean; branches?: boolean } = {}): Note[] {
   const here = resolve(dir);
@@ -180,7 +187,8 @@ export function listNotes(dir: string, opts: { children?: boolean; branches?: bo
     add(readNotesIn(join(place.dir, "notes"), place.checkout, here, "personal"));
     if (place.git && opts.branches !== false) add(branchNotes(place.checkout, here));
   }
-  return out.sort((a, b) => (a.date === b.date ? b.path.localeCompare(a.path) : b.date.localeCompare(a.date)));
+  const replaced = new Set(out.map((n) => n.replaces).filter((r): r is string => !!r));
+  return out.filter((n) => !replaced.has(noteName(n))).sort((a, b) => (a.date === b.date ? b.path.localeCompare(a.path) : b.date.localeCompare(a.date)));
 }
 
 /** The learnings on teammates' pushed branches, from the branch cache. */
@@ -231,6 +239,7 @@ export interface WriteNoteInput {
   cost?: NoteCost;
   touches?: string[];
   standing?: boolean;
+  replaces?: string;
 }
 
 /**
@@ -262,6 +271,7 @@ export function writeNote(dir: string, input: WriteNoteInput, scope: LearningSco
     body: input.body,
     scope: inRepo ? "repo" : "personal",
     ...(input.standing ? { standing: true } : {}),
+    ...(input.replaces ? { replaces: input.replaces } : {}),
   };
   writeFileSync(join(notes, name), renderNote(note));
   return { ...note, path: join(notes, name) };
