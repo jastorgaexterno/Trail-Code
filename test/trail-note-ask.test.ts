@@ -51,6 +51,23 @@ test('a check that failed, then passed after an edit to the code, is a sign', ()
   assert.deepEqual(kinds(jsonl(prompt('x'), bash('npm test', 'x', true), edit('a.ts'), bash('npm run build', 'ok'))), [], 'a different check passing');
 });
 
+test('a fix made through the shell (a script that rewrites the file) counts as the edit', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'trail-shell-edit-'));
+  mkdirSync(join(repo, 'backend', 'internal', 'models'), { recursive: true });
+  writeFileSync(join(repo, 'backend', 'internal', 'models', 'app_tool.go'), 'package models\n');
+  mkdirSync(join(repo, '.claude'));
+  writeFileSync(join(repo, '.claude', 'settings.json'), '{}');
+  // The transcript records the session's folder on each call; the script names the file relative to it.
+  const inDir = (cwd: string, parts: object[]) => parts.map((e: any) => (e.type === 'assistant' ? { ...e, cwd } : e));
+  const script = "cd internal/models && python3 - <<'E'\np='app_tool.go'\ns=open(p).read()\nopen(p,'w').write(s)\nE";
+  const fixed = jsonl(prompt('add it'), bash('go test ./internal/models/', 'FAIL', true), inDir(join(repo, 'backend'), bash(script)), bash('go test ./internal/models/', 'ok'));
+  assert.equal(noteSignals(fixed, repo)[0]?.what, 'go test failed once, then passed after your change to backend/internal/models/app_tool.go.');
+  const sed = jsonl(prompt('add it'), bash('go test ./...', 'FAIL', true), bash(`sed -i '' 's/a/b/' ${join(repo, 'backend/internal/models/app_tool.go')}`), bash('go test ./...', 'ok'));
+  assert.deepEqual(kinds(sed, repo), ['fixed']);
+  const own = jsonl(prompt('x'), bash('npm test', 'x', true), bash(`cat > ${join(repo, '.claude/settings.json')} <<'E'\n{}\nE`), bash('npm test', 'ok'));
+  assert.deepEqual(kinds(own, repo), [], "a shell write to trail's own files is setup");
+});
+
 test('the person correcting the agent is a sign, when the agent goes on to change code', () => {
   const corrected = jsonl(prompt('add a lock'), say("I'll add a mutex."), prompt('no, use a channel instead, we never share memory here'), edit('src/queue.go'));
   const [s] = noteSignals(corrected, REPO);

@@ -19,7 +19,8 @@
  *
  * Pure, for tests: `noteSignals` takes the transcript's JSONL.
  */
-import { isAbsolute, relative, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { trailOwnPath } from '../notes/git-facts.js';
 import { NOTE_CALL } from '../notes/session-cost.js';
 
@@ -38,6 +39,19 @@ export const NOTE_ASKS_PER_SESSION = 3;
 
 /** Claude Code's tools that change a file. */
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+
+/**
+ * A shell command that writes files: an in-place `sed`/`perl`, a redirect or
+ * `tee` into a file, a patch, or a script that opens one for writing. Agents
+ * often edit this way (a `python3 - <<EOF` that rewrites a file), and a fix
+ * made so is still a fix.
+ */
+const BASH_WRITE =
+  /\bsed\s+(?:-[a-zA-Z]+\s+)*-i|\bperl\s+-[a-z]*i|\btee\s|(?:^|[^>&0-9])>>?\s*[\w./~-]+\.\w+|\bgit\s+apply\b|\bapply_patch\b|\bopen\([^)]*,\s*['"][wa]|\.write_text\(|\bwriteFileSync\(/m;
+/** File names in a command, by their extension. */
+const FILE_WORD = /[\w./-]+\.(?:go|tsx?|jsx?|mjs|cjs|py|rb|rs|java|kt|swift|cs|php|c|h|cc|cpp|hpp|scala|sql|ya?ml|json|toml|sh|css|scss|vue|svelte)\b/g;
+/** `cd <dir> &&` at the start of a command: where its relative paths start. */
+const LEADING_CD = /^\s*cd\s+(["']?)([^"'&;|]+?)\1\s*(?:&&|;)/;
 
 /**
  * A test, build or type check, as typed: `npm test`, `go test`, `pytest`,
@@ -75,6 +89,8 @@ interface ToolEvent {
   name: string;
   input: any;
   id: string;
+  /** The session's folder when the call was made, as the transcript records it. */
+  cwd?: string;
 }
 interface ToolResult {
   error: boolean;
@@ -140,7 +156,8 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
     const blocks: any[] = Array.isArray(content) ? content : [];
     if (e?.type === 'assistant') {
       for (const b of blocks) {
-        if (b?.type === 'tool_use') tools.push({ at, uuid, name: String(b.name ?? ''), input: b.input ?? {}, id: String(b.id ?? '') });
+        if (b?.type === 'tool_use')
+          tools.push({ at, uuid, name: String(b.name ?? ''), input: b.input ?? {}, id: String(b.id ?? ''), cwd: typeof e.cwd === 'string' ? e.cwd : undefined });
         else if (b?.type === 'text' && typeof b.text === 'string') said.push({ at, uuid, text: b.text });
       }
       if (blocks.length) agentSpoke = true;
@@ -170,8 +187,26 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
     const p = rel.split(sep).join('/');
     return trailOwnPath(p) ? null : p;
   };
-  const codeEdit = (t: ToolEvent) => (EDIT_TOOLS.has(t.name) ? inRepo(t.input?.file_path ?? t.input?.notebook_path) : null);
   const bash = (t: ToolEvent) => (t.name === 'Bash' && typeof t.input?.command === 'string' ? (t.input.command as string) : null);
+  /** The repo file a shell command wrote, '' when it wrote one this can't name, null when it wrote none. */
+  const shellEdit = (t: ToolEvent): string | null => {
+    const c = bash(t);
+    if (!c || !BASH_WRITE.test(c) || results.get(t.id)?.error) return null;
+    const cd = LEADING_CD.exec(c)?.[2]?.trim();
+    const base = cd ? resolve(t.cwd ?? repo, cd) : (t.cwd ?? repo);
+    let ownOnly = false;
+    for (const w of c.match(FILE_WORD) ?? []) {
+      for (const at of isAbsolute(w) ? [w] : [resolve(base, w), resolve(repo, w)]) {
+        if (!existsSync(at)) continue;
+        const p = inRepo(at);
+        if (p) return p;
+        ownOnly = true;
+      }
+    }
+    // Writing only trail's own files (settings, learnings) is setup, not a fix.
+    return ownOnly ? null : '';
+  };
+  const codeEdit = (t: ToolEvent): string | null => (EDIT_TOOLS.has(t.name) ? inRepo(t.input?.file_path ?? t.input?.notebook_path) : shellEdit(t));
   /** Work on the repo after `at`: a code edit, or a command that isn't setting tools up. */
   const setupOnly = (c: string) => c.split(/&&|\|\||;/).every((part) => !part.trim() || SETUP.test(` ${part.trim()} `) || NOTE_CALL.test(part));
   const workedAfter = (when: number) => work.some((t) => t.at > when && (codeEdit(t) !== null || ((c) => c !== null && !setupOnly(c))(bash(t))));
@@ -198,7 +233,8 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
     const edits = work.filter((t) => t.at > firstFail && t.at < pass.t.at).map(codeEdit).filter((f): f is string => f !== null);
     if (!edits.length) continue;
     const times = fails.length === 1 ? 'once' : `${fails.length} times`;
-    out.push({ kind: 'fixed', key: `fixed:${pass.t.uuid}`, what: `${pass.name} failed ${times}, then passed after your change to ${edits[edits.length - 1]}.` });
+    const file = [...edits].reverse().find((f) => f !== '');
+    out.push({ kind: 'fixed', key: `fixed:${pass.t.uuid}`, what: `${pass.name} failed ${times}, then passed after your change${file ? ` to ${file}` : ''}.` });
     break;
   }
 
