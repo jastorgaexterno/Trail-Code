@@ -1,0 +1,275 @@
+/**
+ * When the Stop hook asks for a learning: on a sign in the transcript that the
+ * session found something the code won't tell the next person, not on a count
+ * of tool calls. A count fired on the first busy turn of a session, which is
+ * usually setting things up, and the learnings it got were about that.
+ *
+ * The signs, best first:
+ * - `fixed`: a test or build command failed, then passed after an edit;
+ * - `corrected`: the person corrected the agent ("no, …", "we use …"), and the
+ *   agent went on to change code;
+ * - `undone`: an edit was undone (`git restore`, `git revert`, …);
+ * - `chose`: the person picked one of the options the agent offered, and the
+ *   agent went on to change code;
+ * - `shipped`: `git commit`, `git push` or `gh pr create` after code edits.
+ *
+ * Only what happened since the session's last saved learning counts, so each
+ * learning starts the count over. Work on trail's own files (`.trail/`,
+ * `.claude/`, AGENTS.md …) is never a sign: that's setup, not the repo's code.
+ *
+ * Pure, for tests: `noteSignals` takes the transcript's JSONL.
+ */
+import { isAbsolute, relative, sep } from 'node:path';
+import { trailOwnPath } from '../notes/git-facts.js';
+import { NOTE_CALL } from '../notes/session-cost.js';
+
+export type NoteSignalKind = 'fixed' | 'corrected' | 'undone' | 'chose' | 'shipped';
+
+export interface NoteSignal {
+  kind: NoteSignalKind;
+  /** What raised it (its transcript entry), so one sign is asked about once. */
+  key: string;
+  /** What happened, in the session's own terms: the first line of the ask. */
+  what: string;
+}
+
+/** Most times the Stop hook asks for a learning in one session. */
+export const NOTE_ASKS_PER_SESSION = 3;
+
+/** Claude Code's tools that change a file. */
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+
+/**
+ * A test, build or type check, as typed: `npm test`, `go test`, `pytest`,
+ * `npx tsc`, `make`. The match is the command's name for itself, so two runs
+ * of `go test` with different flags are the same check.
+ */
+const CHECK =
+  /(?:^|[;&|(]\s*|\s)((?:npx\s+|bunx\s+|pnpm\s+exec\s+)?(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check)(?::[\w-]+)?|go\s+(?:test|build|vet)|cargo\s+(?:test|build|check|clippy)|python3?\s+-m\s+(?:pytest|unittest)|pytest|tsc|jest|vitest|mocha|rspec|node\s+--test|deno\s+test|swift\s+(?:test|build)|dotnet\s+(?:test|build)|mix\s+test|mvn\s+[\w:-]*(?:test|verify|package)|\.?\/?gradlew?\s+[\w:-]*(?:test|build)|make(?:\s+(?!-)[\w-]+)?|eslint|ruff|golangci-lint))(?=$|[\s;&|)])/;
+
+/** Output that says a check failed even when a pipe (`| tail`) hid its exit code. */
+const FAILED_OUTPUT =
+  /\b\d+ (?:failed|failing)\b|^FAIL\b|\bFAILED\b|^# fail [1-9]|\bpanic:|Traceback \(most recent|\berror TS\d+|npm ERR!|\bBUILD FAILED\b|\bcompilation failed\b|^error(?:\[E\d+\])?:/m;
+const ZERO_FAILED = /\b0 (?:failed|failing)\b|^# fail 0\b/m;
+
+const UNDO = /\bgit\s+(?:restore|revert|reset\s+--hard|checkout\s+(?:\S+\s+)?--\s)/;
+const SHIP = /\b(git\s+commit|git\s+push|gh\s+pr\s+create)\b/;
+/** Commands that set tools up rather than work on the repo. */
+const SETUP = /(?:^|[\s;&|])(?:trail|graft|npx\s+(?:-y\s+)?@(?:trailhq|nanonets)\/[\w-]+)\s|(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|uninstall)\b|\bbrew\s+install\b|\bpip3?\s+install\b/;
+
+/** The person correcting the agent: at the start of their message, or a rule stated in it. */
+const CORRECTION_LEAD = /^\s*(?:no|nope|nah|wrong|actually|don't|dont|do not|never|stop|not (?:that|this|like that|quite)|that's (?:not|wrong)|that is (?:not|wrong))\b[\s,.!:;-]/i;
+const CORRECTION_RULE =
+  /\b(?:instead of|instead,|use \S+ instead|we (?:always |usually |never )?(?:use|do|don't|keep|put|run)\b|not like that|that's not how|should(?:n't| not) (?:be|use)|you (?:forgot|missed|broke)\b)/i;
+/** A clarification, not a correction: "no, I mean the other file". */
+const CLARIFY = /\bi mean(?:t)?\b|\bi was (?:just )?asking\b|\bjust asking\b/i;
+
+/** The person picking one of the options the agent offered. */
+const PICK =
+  /^\s*(?:(?:option|choice|plan)\s*)?(?:[1-9]|[a-d])\s*[.)!]?\s*(?:please|pls)?\s*$|^\s*(?:let'?s |go with |use |pick |do |take |yes,? )?(?:the )?(?:first|second|third|last|1st|2nd|3rd|(?:option|choice|plan)\s*[a-d1-9])\b|^\s*go with\b/i;
+const OPTION_LINE = /^\s*(?:\d+[.)]|[A-D][.)]|[-*]\s+\*\*(?:option|choice)|(?:option|choice)\s+[A-D1-9]\b)/gim;
+
+interface ToolEvent {
+  at: number;
+  uuid: string;
+  name: string;
+  input: any;
+  id: string;
+}
+interface ToolResult {
+  error: boolean;
+  text: string;
+}
+interface Said {
+  at: number;
+  uuid: string;
+  text: string;
+}
+
+function textOf(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('\n');
+  return '';
+}
+
+/** What the person typed, or null: tool results, hook feedback and system lines aren't typed. */
+function typed(e: any): string | null {
+  if (e?.type !== 'user' || e?.isMeta) return null;
+  const content = e?.message?.content;
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content) && content.some((b: any) => b?.type === 'text')
+        ? content.filter((b: any) => b?.type === 'text').map((b: any) => String(b.text ?? '')).join('\n')
+        : null;
+  if (text === null) return null;
+  const t = text.trim();
+  if (!t || t.startsWith('<') || t.startsWith('[Request interrupted') || t.startsWith('Caveat:') || /^Stop hook feedback/i.test(t)) return null;
+  return t;
+}
+
+/** `"no, use a worktree for…"`: the first line, short, safe inside double quotes. */
+export function quoted(s: string, n = 60): string {
+  const line = s.split('\n')[0]!.trim().replace(/"/g, "'");
+  return line.length > n ? `${line.slice(0, n - 1).trimEnd()}…` : line;
+}
+
+/**
+ * Every sign since the session's last saved learning, best first. `repo` is
+ * the folder the session works in, to tell its code from trail's files and
+ * from files outside it.
+ */
+export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
+  const tools: ToolEvent[] = [];
+  const results = new Map<string, ToolResult>();
+  const prompts: Said[] = [];
+  const said: Said[] = [];
+  let at = 0;
+  let agentSpoke = false;
+  for (const line of jsonl.split('\n')) {
+    if (!line.trim()) continue;
+    let e: any;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    at++;
+    const uuid = typeof e?.uuid === 'string' ? e.uuid : `#${at}`;
+    const content = e?.message?.content;
+    const blocks: any[] = Array.isArray(content) ? content : [];
+    if (e?.type === 'assistant') {
+      for (const b of blocks) {
+        if (b?.type === 'tool_use') tools.push({ at, uuid, name: String(b.name ?? ''), input: b.input ?? {}, id: String(b.id ?? '') });
+        else if (b?.type === 'text' && typeof b.text === 'string') said.push({ at, uuid, text: b.text });
+      }
+      if (blocks.length) agentSpoke = true;
+      continue;
+    }
+    for (const b of blocks) {
+      if (b?.type === 'tool_result') results.set(String(b.tool_use_id ?? ''), { error: b.is_error === true, text: textOf(b.content) });
+    }
+    const t = typed(e);
+    // The session's first message can't correct anything.
+    if (t !== null && agentSpoke) prompts.push({ at, uuid, text: t });
+  }
+
+  // Start after the last learning that was saved (a note the gate turned away doesn't count).
+  let from = 0;
+  for (const t of tools) {
+    const cmd = typeof t.input?.command === 'string' ? t.input.command : '';
+    if (t.name === 'Bash' && NOTE_CALL.test(cmd) && results.get(t.id)?.error !== true) from = t.at;
+  }
+  const since = <T extends { at: number }>(xs: T[]) => xs.filter((x) => x.at > from);
+  const work = since(tools);
+
+  const inRepo = (file: unknown): string | null => {
+    if (typeof file !== 'string' || !file) return null;
+    const rel = isAbsolute(file) ? relative(repo, file) : file;
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+    const p = rel.split(sep).join('/');
+    return trailOwnPath(p) ? null : p;
+  };
+  const codeEdit = (t: ToolEvent) => (EDIT_TOOLS.has(t.name) ? inRepo(t.input?.file_path ?? t.input?.notebook_path) : null);
+  const bash = (t: ToolEvent) => (t.name === 'Bash' && typeof t.input?.command === 'string' ? (t.input.command as string) : null);
+  /** Work on the repo after `at`: a code edit, or a command that isn't setting tools up. */
+  const setupOnly = (c: string) => c.split(/&&|\|\||;/).every((part) => !part.trim() || SETUP.test(` ${part.trim()} `) || NOTE_CALL.test(part));
+  const workedAfter = (when: number) => work.some((t) => t.at > when && (codeEdit(t) !== null || ((c) => c !== null && !setupOnly(c))(bash(t))));
+
+  const out: NoteSignal[] = [];
+
+  // fixed: the same check failed, then passed after an edit to the code.
+  const checks = work
+    .map((t) => {
+      const c = bash(t);
+      const m = c ? CHECK.exec(c) : null;
+      const r = results.get(t.id);
+      if (!m || !r) return null;
+      const failed = r.error || (FAILED_OUTPUT.test(r.text) && !ZERO_FAILED.test(r.text));
+      return { t, name: m[1]!.replace(/\s+/g, ' ').trim(), failed };
+    })
+    .filter((x): x is { t: ToolEvent; name: string; failed: boolean } => x !== null);
+  for (let i = checks.length - 1; i >= 0; i--) {
+    const pass = checks[i]!;
+    if (pass.failed) continue;
+    const fails = checks.slice(0, i).filter((c) => c.failed && c.name === pass.name);
+    if (!fails.length) continue;
+    const firstFail = fails[0]!.t.at;
+    const edits = work.filter((t) => t.at > firstFail && t.at < pass.t.at).map(codeEdit).filter((f): f is string => f !== null);
+    if (!edits.length) continue;
+    const times = fails.length === 1 ? 'once' : `${fails.length} times`;
+    out.push({ kind: 'fixed', key: `fixed:${pass.t.uuid}`, what: `${pass.name} failed ${times}, then passed after your change to ${edits[edits.length - 1]}.` });
+    break;
+  }
+
+  // corrected: the person set the agent straight, and it went on to change things.
+  for (const p of since(prompts).reverse()) {
+    if (CLARIFY.test(p.text) || !(CORRECTION_LEAD.test(p.text) || CORRECTION_RULE.test(p.text))) continue;
+    if (!workedAfter(p.at)) continue;
+    out.push({ kind: 'corrected', key: `corrected:${p.uuid}`, what: `The user corrected you ("${quoted(p.text)}").` });
+    break;
+  }
+
+  // undone: an edit thrown away, which is an approach ruled out.
+  for (const t of [...work].reverse()) {
+    const c = bash(t);
+    if (!c || !UNDO.test(c) || results.get(t.id)?.error) continue;
+    const paths = c.split(/\s+/).filter((w) => /[/.]/.test(w) && !w.startsWith('-') && !/^(?:HEAD|origin)\b/.test(w));
+    if (paths.length && paths.every((w) => trailOwnPath(w.replace(/^\.\//, '')))) continue;
+    out.push({ kind: 'undone', key: `undone:${t.uuid}`, what: `You undid a change (\`${quoted(c, 50)}\`).` });
+    break;
+  }
+
+  // chose: the person picked one of the agent's options, and it built that one.
+  const picked = (): NoteSignal | null => {
+    for (const t of [...work].reverse()) {
+      if (t.name !== 'AskUserQuestion') continue;
+      const r = results.get(t.id);
+      if (!r || r.error || !workedAfter(t.at)) continue;
+      const answer = r.text.replace(/^[^:]*answered[^:]*:\s*/i, '');
+      return { kind: 'chose', key: `chose:${t.uuid}`, what: `The user picked one of your options ("${quoted(answer)}").` };
+    }
+    for (const p of since(prompts).reverse()) {
+      if (p.text.length > 80 || !PICK.test(p.text)) continue;
+      const offer = [...said].reverse().find((s) => s.at < p.at);
+      if (!offer || !offer.text.includes('?') || (offer.text.match(OPTION_LINE) ?? []).length < 2) continue;
+      if (!workedAfter(p.at)) continue;
+      return { kind: 'chose', key: `chose:${p.uuid}`, what: `The user picked one of your options ("${quoted(p.text)}").` };
+    }
+    return null;
+  };
+  const choice = picked();
+  if (choice) out.push(choice);
+
+  // shipped: the work went into a commit, a push or a PR with no learning beside it.
+  if (work.some((t) => codeEdit(t) !== null)) {
+    for (const t of [...work].reverse()) {
+      const c = bash(t);
+      const m = c ? SHIP.exec(c) : null;
+      if (!m || results.get(t.id)?.error) continue;
+      const verb = m[1]!.startsWith('gh') ? 'opened a PR for' : m[1]!.endsWith('push') ? 'pushed' : 'committed';
+      out.push({ kind: 'shipped', key: `shipped:${t.uuid}`, what: `You ${verb} this work, and no learning went with it.` });
+      break;
+    }
+  }
+  return out;
+}
+
+const SAVE = '`trail note --title "<the fact, not the task>"`';
+const CLOSE = 'Sections: ## Decided, ## Tried and ruled out, ## Watch out. A summary, never a transcript, nothing secret. Then finish as trail\'s output asks.';
+
+/** What the agent is told: the sign first, since Claude Code folds long hook output to its first lines. */
+export function noteAsk(s: NoteSignal): string {
+  const skip = 'Nothing worth keeping? Say so and stop.';
+  const first =
+    s.kind === 'fixed'
+      ? `${s.what} If the cause isn't obvious from the diff, save it: ${SAVE}, naming the file and the why. ${skip}`
+      : s.kind === 'corrected'
+        ? `${s.what} Save the rule so nobody has to say it again: ${SAVE}, naming the file it's about; add --personal if it's about how this person likes to work. ${skip}`
+        : s.kind === 'undone'
+          ? `${s.what} If you dropped an approach, save why under ## Tried and ruled out: ${SAVE}, naming the file. ${skip}`
+          : s.kind === 'chose'
+            ? `${s.what} If the choice matters to the next person, save it under ## Decided, with the options you dropped and why under ## Tried and ruled out: ${SAVE}. ${skip}`
+            : `${s.what} If the session found what the diff won't tell the next person (a cause, a dropped approach, a rule), save it now so it ships with the change: ${SAVE}. ${skip}`;
+  return `[trail] ${first}\n${CLOSE}`;
+}
