@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
 import { formatBlastRadius, relevantRetrieval, formatOrientation, notesForPrompt, notesOnTouch, standingDirective, type Touch } from './format.js';
 import { commitLines, listNotes, setupCommitLine, standingLearnings } from '../notes/notes.js';
+import { liveLearnings } from '../notes/learning-fields.js';
 import { noteAuthor, teammatesOn } from '../notes/git-facts.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
 import { patchStats, readStats, acquireLock, readSession, writeSession, resolveContextDir } from './state.js';
@@ -331,7 +332,7 @@ export function learningsOnTouch(input: any, dir: string): string | null {
     } else if (typeof ti.command === 'string' && ti.command && !commandInvokesGraft(ti.command)) {
       touch = { command: ti.command };
     } else return null;
-    const notes = listNotes(dir, { branches: false });
+    const notes = liveLearnings(listNotes(dir, { branches: false }));
     if (!notes.length) return null;
     const id = input?.session_id || 'default';
     const s = readSession(dir, id);

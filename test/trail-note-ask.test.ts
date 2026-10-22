@@ -108,6 +108,22 @@ test('committing, pushing or opening a PR for code with no learning is a sign', 
   assert.deepEqual(kinds(jsonl(prompt('x'), edit('.trail/learnings/x.md'), bash('git commit -m learning'))), [], 'committing a learning');
 });
 
+test('a turn that read a lot to find its answer is a sign, with no edit needed', () => {
+  const big = 'x'.repeat(130_000);
+  const read = (file: string, out: string) => tool('Read', { file_path: join(REPO, file) }, out);
+  const [s] = noteSignals(jsonl(prompt('where does the retry budget live?'), read('src/retry.ts', big)), REPO);
+  assert.equal(s?.kind, 'explored');
+  assert.equal(s!.what, 'This turn took about 33k tokens of reading to work out.');
+  assert.match(noteAsk(s!), /^\[trail\] This turn took about 33k tokens of reading to work out\. If it found where something lives or why it works the way it does/);
+  assert.deepEqual(kinds(jsonl(prompt('why do retries stall?'), tool('Grep', { pattern: 'retry' }, big))), ['explored'], 'search results count');
+  assert.deepEqual(kinds(jsonl(prompt('how does auth work?'), bash('trail ask "auth"', '[trail] tokens saved ≈ 31,200\n…'))), ['explored'], "what trail's answers stood in for counts");
+  assert.deepEqual(kinds(jsonl(prompt('x'), bash('trail ask "x"', '[trail] learnings saved ≈ 900,000 tokens'))), [], "a reused learning's own line doesn't");
+  assert.deepEqual(kinds(jsonl(prompt('x'), read('src/a.ts', 'x'.repeat(40_000)))), [], 'under 30k tokens');
+  assert.deepEqual(kinds(jsonl(prompt('x'), read('.trail/learnings/a.md', big))), [], "reading trail's own files");
+  assert.deepEqual(kinds(jsonl(prompt('x'), read('src/a.ts', big), prompt('thanks'), say('ok'))), [], 'only the turn that just ended counts');
+  assert.deepEqual(kinds(jsonl(prompt('x'), read('src/a.ts', big), bash('trail note --title "x" <<EOF', '✓ saved for your team'))), [], 'a saved learning starts it over');
+});
+
 test('a saved learning starts the signs over; one the gate turned away does not; the best sign comes first', () => {
   const fixed = [prompt('x'), bash('npm test', 'x', true), edit('a.ts'), bash('npm test', 'ok')];
   assert.deepEqual(kinds(jsonl(...fixed, bash('trail note --title "x" <<EOF', '✓ saved for your team'))), []);

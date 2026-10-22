@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gateNote, symbolCandidates, type GateInput } from "../src/notes/note-gate.js";
 import { listNotes, noteName, parseNote, type Note } from "../src/notes/notes.js";
+import { liveLearnings } from "../src/notes/learning-fields.js";
 import { homeEnv, tmpRepo } from "./helpers.js";
 
 process.env.TRAIL_HOME = mkdtempSync(join(tmpdir(), "gate-trail-home-"));
@@ -34,7 +35,7 @@ const input = (over: Partial<GateInput> = {}): GateInput => ({
 });
 
 function existing(over: Partial<Note> = {}): Note {
-  return { path: "/r/.trail/learnings/2026-10-15-codeql-priya.md", title: "CodeQL actions must be pinned together", author: "Priya", date: "2026-10-15", touches: [".github/workflows/codeql.yml"], body: GOOD, scope: "repo", ...over };
+  return { path: "/r/.trail/learnings/2026-10-15-codeql-priya.md", id: "l-0a0a0a", title: "CodeQL actions must be pinned together", author: "Priya", date: "2026-10-15", touches: [".github/workflows/codeql.yml"], body: GOOD, scope: "repo", ...over };
 }
 
 /** A literal string as a regex: every special character escaped, backslash included. */
@@ -60,7 +61,7 @@ test("each check says what to fix", () => {
 
   const twin = gateNote(input(), [existing()]).problems;
   assert.match(twin[0]!, /^It repeats \.trail\/learnings\/2026-10-15-codeql-priya\.md \("CodeQL actions must be pinned together", Priya, Oct 15\)\. If it updates that one, add --replaces 2026-10-15-codeql-priya\.md/);
-  assert.deepEqual(gateNote(input({ replaces: "2026-10-15-codeql-priya.md" }), [existing()]).problems, [], "unless it replaces that one");
+  assert.deepEqual(gateNote(input({ replaces: "l-0a0a0a" }), [existing()]).problems, [], "unless it replaces that one, by id");
   assert.deepEqual(gateNote(input(), [existing({ touches: ["src/other.ts"], title: "Something else", body: "## Decided\n- Unrelated because reasons." })]).problems, [], "another learning on other files");
 });
 
@@ -128,7 +129,10 @@ test("trail note refuses with the fix, saves with --anyway, and takes over with 
   assert.match(replacing.out, new RegExp(`· takes over from ${escapeRe(first!)}, which stays as the record`));
   const files = readdirSync(join(d, ".trail", "learnings"));
   assert.equal(files.length, 2, "the old learning stays");
-  const listed = listNotes(d, { branches: false }).map((n) => n.title);
+  const read = (f: string) => parseNote(readFileSync(join(d, ".trail", "learnings", f), "utf8"), f)!;
+  const newer = files.find((f) => f !== first)!;
+  assert.equal(read(newer).replaces, read(first!).id, "replaces: holds the old learning's id, not its file name");
+  const listed = liveLearnings(listNotes(d, { branches: false })).map((n) => n.title);
   assert.deepEqual(listed, ["Rotated PDFs need per-page rotation, mirrored too"], "and the new one is read instead");
 
   const anyway = run(["note", d, "--title", "Sprint notes", "--anyway"], home, "Ship it today.\n");

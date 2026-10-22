@@ -57,6 +57,7 @@ import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
 import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
 import { costLabel, listNotes, noteName, notePlace, noteTargets, readingTokens, savedByNote, commitLines, PERSONAL_SAVED_LINE, PR_SPEEDUP, SECTIONS, tokensWorthSaying, sectionLead, shortDate, tokensLabel, writeNote, type Note, mentionedFiles } from "./notes/notes.js";
+import { findLearning, liveLearnings } from "./notes/learning-fields.js";
 import { aboutTerms, currentSessionCost } from "./notes/session-cost.js";
 import { beginPastRead, finishPastRead, type Finding } from "./notes/cold-start.js";
 import { anchoredReviews, beginReviewRead, finishReviewRead, type ReviewFinding } from "./notes/pr-reviews.js";
@@ -1387,17 +1388,18 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   const scope = opts.personal ? "personal" : "repo";
   const primary = targets[0]!;
   const existing = listNotes(primary.dir, { branches: false });
-  let replaces: string | undefined;
+  let old: Note | undefined;
   if (opts.replaces) {
     const want = basename(opts.replaces.trim());
-    const old = existing.find((n) => noteName(n) === want || noteName(n) === `${want}.md`);
+    old = findLearning(existing, want);
     if (!old) {
       console.error(`✗ --replaces: no learning named ${want} here. The names are the files in .trail/learnings/.`);
       process.exitCode = 1;
       return;
     }
-    replaces = noteName(old);
   }
+  // What `replaces:` holds is the old learning's id (learning-fields.ts), not its file name.
+  const replaces = old?.id;
   const text = `${opts.title}\n${body}`;
   const gate = gateNote(
     {
@@ -1409,7 +1411,7 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
       touches: primary.touches,
       replaces,
     },
-    existing.filter((n) => (n.scope ?? "repo") === scope),
+    liveLearnings(existing).filter((n) => (n.scope ?? "repo") === scope),
   );
   if (gate.problems.length && !opts.anyway) {
     console.error("✗ not saved yet:");
@@ -1456,7 +1458,7 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   if (!SECTIONS.some((s) => sectionLead(body, s.heading) !== null))
     console.log("· tip: learnings read best under ## Decided, ## Tried and ruled out and ## Watch out");
   for (const w of gate.warnings) console.log(`· ${w}`);
-  if (replaces) console.log(`· takes over from ${replaces}, which stays as the record`);
+  if (old) console.log(`· takes over from ${noteName(old)}, which stays as the record`);
   const repoSaved = saved.filter((n) => n.scope === "repo");
   if (repoSaved.length) {
     // Who else works on these files, for the case for committing it.

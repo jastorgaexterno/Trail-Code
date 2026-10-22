@@ -30,7 +30,7 @@ export interface GateInput {
   namesSymbol: boolean;
   /** What it will touch, for the repeat check. */
   touches: string[];
-  /** The learning it says it replaces (`--replaces`), by file name. */
+  /** The id of the learning it says it replaces (`--replaces`). */
   replaces?: string;
 }
 
@@ -109,7 +109,7 @@ export function repeatOf(input: Pick<GateInput, "title" | "body" | "touches" | "
   const title = words(input.title);
   const body = words(input.body);
   for (const n of existing) {
-    if (input.replaces && noteName(n) === input.replaces) continue;
+    if (input.replaces && n.id === input.replaces) continue;
     const shared = n.touches.some((t) => files.has(t.split("#")[0]!));
     const sameTitle = jaccard(title, words(n.title));
     const sameBody = jaccard(body, words(n.body));

@@ -11,7 +11,9 @@
  * - `undone`: an edit was undone (`git restore`, `git revert`, …);
  * - `chose`: the person picked one of the options the agent offered, and the
  *   agent went on to change code;
- * - `shipped`: `git commit`, `git push` or `gh pr create` after code edits.
+ * - `shipped`: `git commit`, `git push` or `gh pr create` after code edits;
+ * - `explored`: one turn took NOTE_WORTHY_READING tokens of reading to answer,
+ *   with no edit needed: where a feature lives, why a bug happens.
  *
  * Only what happened since the session's last saved learning counts, so each
  * learning starts the count over. Work on trail's own files (`.trail/`,
@@ -24,7 +26,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { trailOwnPath } from '../notes/git-facts.js';
 import { NOTE_CALL } from '../notes/session-cost.js';
 
-export type NoteSignalKind = 'fixed' | 'corrected' | 'undone' | 'chose' | 'shipped';
+export type NoteSignalKind = 'fixed' | 'corrected' | 'undone' | 'chose' | 'shipped' | 'explored';
 
 export interface NoteSignal {
   kind: NoteSignalKind;
@@ -36,6 +38,19 @@ export interface NoteSignal {
 
 /** Most times the Stop hook asks for a learning in one session. */
 export const NOTE_ASKS_PER_SESSION = 3;
+
+/**
+ * Reading in one turn, in tokens, before it counts as digging worth a learning:
+ * what trail's answers stood in for, plus the repo files and search results the
+ * agent read itself. trail answers most questions in one or two calls, so
+ * finding where something lives never needed an edit to be worth saving.
+ */
+export const NOTE_WORTHY_READING = 30_000;
+
+/** The reading a trail answer stood in for, from its `[trail] tokens saved ≈ N` line. A reused learning's own line doesn't count: that digging was done before. */
+const TRAIL_SAVED = /\[(?:graft|trail)\] tokens saved ≈ ([\d,]+)/g;
+/** Claude Code's tools that read the repo. */
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 
 /** Claude Code's tools that change a file. */
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
@@ -142,6 +157,8 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
   const said: Said[] = [];
   let at = 0;
   let agentSpoke = false;
+  /** Where the turn that just ended began: the person's last message. */
+  let turn: Said | null = null;
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
     let e: any;
@@ -167,6 +184,7 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
       if (b?.type === 'tool_result') results.set(String(b.tool_use_id ?? ''), { error: b.is_error === true, text: textOf(b.content) });
     }
     const t = typed(e);
+    if (t !== null) turn = { at, uuid, text: t };
     // The session's first message can't correct anything.
     if (t !== null && agentSpoke) prompts.push({ at, uuid, text: t });
   }
@@ -288,6 +306,22 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
       break;
     }
   }
+
+  // explored: this turn read a lot to find its answer. Asked once a turn, and never for reading trail's own files.
+  const start = Math.max(from, turn?.at ?? 0);
+  let reading = 0;
+  for (const t of work) {
+    if (t.at <= start) continue;
+    const r = results.get(t.id);
+    if (!r || r.error) continue;
+    for (const m of r.text.matchAll(TRAIL_SAVED)) reading += Number(m[1]!.replace(/,/g, '')) || 0;
+    if (!READ_TOOLS.has(t.name)) continue;
+    if (t.name === 'Read' && inRepo(t.input?.file_path) === null) continue;
+    reading += Math.round(r.text.length / 4);
+  }
+  if (reading >= NOTE_WORTHY_READING) {
+    out.push({ kind: 'explored', key: `explored:${turn?.uuid ?? `#${start}`}`, what: `This turn took about ${Math.round(reading / 1000)}k tokens of reading to work out.` });
+  }
   return out;
 }
 
@@ -306,6 +340,8 @@ export function noteAsk(s: NoteSignal): string {
           ? `${s.what} If you dropped an approach, save why under ## Tried and ruled out: ${SAVE}, naming the file. ${skip}`
           : s.kind === 'chose'
             ? `${s.what} If the choice matters to the next person, save it under ## Decided, with the options you dropped and why under ## Tried and ruled out: ${SAVE}. ${skip}`
-            : `${s.what} If the session found what the diff won't tell the next person (a cause, a dropped approach, a rule), save it now so it ships with the change: ${SAVE}. ${skip}`;
+            : s.kind === 'explored'
+              ? `${s.what} If it found where something lives or why it works the way it does, and the code won't say so plainly, save it: ${SAVE}, naming the files. ${skip}`
+              : `${s.what} If the session found what the diff won't tell the next person (a cause, a dropped approach, a rule), save it now so it ships with the change: ${SAVE}. ${skip}`;
   return `[trail] ${first}\n${CLOSE}`;
 }

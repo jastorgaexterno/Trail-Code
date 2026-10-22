@@ -189,8 +189,7 @@ export function noteName(n: Note): string {
  * repos, its own and each repo's. Touches come back relative to `dir`, so
  * they line up with a query run there. `children: false` leaves a folder's
  * repos out. One file name is one learning: the working tree's copy wins,
- * then this machine's, then a branch's. A learning another one `replaces` is
- * left out. Unreadable files are skipped.
+ * then this machine's, then a branch's. Unreadable files are skipped.
  */
 export function listNotes(dir: string, opts: { children?: boolean; branches?: boolean } = {}): Note[] {
   const here = resolve(dir);
@@ -210,8 +209,7 @@ export function listNotes(dir: string, opts: { children?: boolean; branches?: bo
     add(readNotesIn(join(place.dir, "notes"), place.checkout, here, "personal"));
     if (place.git && opts.branches !== false) add(branchNotes(place.checkout, here));
   }
-  const replaced = new Set(out.map((n) => n.replaces).filter((r): r is string => !!r));
-  return out.filter((n) => !replaced.has(noteName(n))).sort((a, b) => (a.date === b.date ? b.path.localeCompare(a.path) : b.date.localeCompare(a.date)));
+  return out.sort((a, b) => (a.date === b.date ? b.path.localeCompare(a.path) : b.date.localeCompare(a.date)));
 }
 
 /** The learnings on teammates' pushed branches, from the branch cache. One that won't read is skipped, never the rest. */
