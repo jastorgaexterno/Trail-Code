@@ -59,7 +59,8 @@ import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
 import { costLabel, listNotes, noteName, notePlace, noteTargets, readingTokens, savedByNote, commitLines, PERSONAL_SAVED_LINE, PR_SPEEDUP, SECTIONS, tokensWorthSaying, sectionLead, shortDate, tokensLabel, writeNote, type Note, mentionedFiles } from "./notes/notes.js";
 import { aboutTerms, currentSessionCost } from "./notes/session-cost.js";
 import { beginPastRead, finishPastRead, type Finding } from "./notes/cold-start.js";
-import { beginReviewRead, finishReviewRead, type ReviewFinding } from "./notes/pr-reviews.js";
+import { anchoredReviews, beginReviewRead, finishReviewRead, type ReviewFinding } from "./notes/pr-reviews.js";
+import { finishMemoryRead, memoryCandidates, offeredBefore, type MemoryCandidate } from "./notes/memory-notes.js";
 import { currentBranch, noteAuthor, teammatesOn } from "./notes/git-facts.js";
 import { gateNote, namesRepoSymbol, symbolCandidates, trackedFiles } from "./notes/note-gate.js";
 import { confirm, fold, getSkill, learn, listSkills, publish, skillForAgent, skillName, skillStatus, type LearnResult } from "./skills/skills.js";
@@ -446,6 +447,11 @@ grouped(program.command("build"), GROUP.setup)
   .option("--deep", "run the LLM pass: concept nodes (graft/*.md) + per-symbol summary/crux")
   .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py"); an extension with no parser is ignored with a warning that lists the supported set')
   .option("-j, --concurrency <n>", "files summarized in parallel during --deep (default 5)")
+  .option(
+    "--synth-concurrency <n>",
+    "concept synthesis batches in flight at once during --deep (default 4). Separate from -j: " +
+      "each synthesis call carries a whole batch of summaries, not one file",
+  )
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option("--allow-partial", "with --deep: exit 0 even when some files' summaries failed (default: a degraded meaning tier exits 1)")
@@ -494,6 +500,7 @@ grouped(program.command("build"), GROUP.setup)
       reuse?: boolean;
       lsp?: boolean;
       allowPartial?: boolean;
+      synthConcurrency?: string;
       includeDir?: string[];
       onlyDir?: string[];
       followSubmodules?: boolean;
@@ -516,6 +523,11 @@ grouped(program.command("build"), GROUP.setup)
     const concurrency = opts.concurrency ? Math.max(1, Number(opts.concurrency)) : undefined;
     if (opts.concurrency && !Number.isFinite(concurrency)) {
       console.error(`✗ --concurrency must be a number, got "${opts.concurrency}"`);
+      process.exit(1);
+    }
+    const synthConcurrency = opts.synthConcurrency ? Math.max(1, Number(opts.synthConcurrency)) : undefined;
+    if (opts.synthConcurrency && !Number.isFinite(synthConcurrency)) {
+      console.error(`✗ --synth-concurrency must be a number, got "${opts.synthConcurrency}"`);
       process.exit(1);
     }
     warnUnsupportedExtensions(opts.extensions);
@@ -601,6 +613,7 @@ grouped(program.command("build"), GROUP.setup)
         deep: !!deep,
         extensions: opts.extensions,
         concurrency,
+        synthConcurrency,
         childConfig: cliConfig(),
         override: buildGlobalDir,
         includeDirs: opts.includeDir,
@@ -618,6 +631,7 @@ grouped(program.command("build"), GROUP.setup)
       const c = await engine.init(dir, {
         extensions: opts.extensions,
         onlyDirs,
+        synthConcurrency,
         onProgress: ({ phase, index, total, file }) =>
           process.stderr.write(
             `\r${phase === "summarize" ? "reading" : "writing"} concepts ${index + 1}/${total}: ${file.slice(0, 40).padEnd(40)}`,
@@ -628,9 +642,9 @@ grouped(program.command("build"), GROUP.setup)
         throw err;
       });
       process.stderr.write("\n");
-      console.log(
-        `✓ concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)`,
-      );
+      const conceptLine = `concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)`;
+      if (c.nodes === 0) console.error(`⚠ ${conceptLine}`);
+      else console.log(`✓ ${conceptLine}`);
       for (const e of c.errors) console.error(`✗ ${e}`);
       conceptErrors = c.errors;
       conceptFatal = c.fatal;
@@ -1650,22 +1664,28 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
       }
     }
 
-    // Under trail: what init learned from past sessions and PR reviews, where
-    // this repo's learnings are, and how many there already are.
+    // Under trail: what init learned, where this repo's learnings are, and how
+    // many there already are. The team's come from what is tied to the code:
+    // what reviewers kept flagging on merged PRs, and Claude Code's notes about
+    // the repo on this machine. What the person kept telling Claude is theirs.
     let learnedNow = false;
-    if (TRAIL && (pastRead || reviewRead)) {
+    let teamSaved = 0;
+    const memory: MemoryCandidate[] = TRAIL && wantClaude ? memoryCandidates(repo, { offered: offeredBefore(repo) }) : [];
+    if (TRAIL && (pastRead || reviewRead || memory.length)) {
       if (pastRead && !pastRead.done) console.error("· still reading your past sessions…");
       const fromSessions = pastRead ? (await pastRead.result).findings : [];
       if (reviewRead && !reviewRead.done) console.error("· still reading PR reviews…");
-      const fromReviews = reviewRead ? (await reviewRead.result).findings : [];
-      // On a terminal, the person ticks which to keep in one list for both
-      // sources, all ticked to start; a scripted run, or one with --yes, keeps
-      // them all. Cancelling saves none, and the next init asks again.
+      const fromReviews = reviewRead ? anchoredReviews(repo, (await reviewRead.result).findings) : [];
+      // On a terminal, the person ticks which to keep in one list, the team's
+      // first and ticked, their own unticked. A scripted run, or one with
+      // --yes, keeps the team's and what they told Claude. Cancelling saves
+      // none, and the next init asks again.
       const picked =
-        process.stdin.isTTY && process.stderr.isTTY && !opts.yes && fromSessions.length + fromReviews.length
+        process.stdin.isTTY && process.stderr.isTTY && !opts.yes && fromReviews.length + memory.length + fromSessions.length
           ? await pickLearnings([
-              ...fromSessions.map((f) => ({ title: f.title, forTeam: f.for === "team", sessions: f.sessions.length })),
-              ...fromReviews.map((f) => ({ title: f.title, forTeam: true, prs: f.prs.length })),
+              ...fromReviews.map((f) => ({ title: f.title, forTeam: true, prs: f.prs })),
+              ...memory.map((c) => ({ title: c.title, forTeam: c.forTeam, memory: true })),
+              ...fromSessions.map((f) => ({ title: f.title, forTeam: false, sessions: f.sessions.length })),
             ])
           : undefined;
       // The picked rows that are `found`'s, which start at `from` in the list.
@@ -1675,18 +1695,47 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
           ? undefined
           : async (found: T[]) => picked && picked.filter((i) => i >= from && i < from + found.length).map((i) => found[i - from]!);
       const learned: Note[] = [];
+      // Reviews first: which of them are offered depends on the learnings already saved.
+      if (reviewRead) {
+        const { result, saved, kept, cancelled } = await finishReviewRead(repo, reviewRead, keepFrom<ReviewFinding>(0));
+        const offered = fromReviews.length;
+        if (saved.length) {
+          const n = saved.length;
+          const what = n < offered ? `kept ${n} of the ${offered} things` : `learned ${n} thing${n === 1 ? "" : "s"}`;
+          console.error(`✓ ${what} reviewers made authors change, from the last ${result.prs} merged PRs here`);
+          // saveReviewFindings keeps the findings' order.
+          saved.forEach((note, i) => console.error(`    for your team · from review on ${(kept[i]?.prs ?? []).map((n) => `#${n}`).join(", ")}: ${note.title}`));
+        } else if (cancelled) {
+          console.error(`· saved none of the ${offered} things reviewers made authors change; ${cmd("graft init")} again asks again`);
+        } else if (offered) {
+          console.error(`· kept none of the ${offered} things reviewers made authors change`);
+        } else if (result.reason === "failed") {
+          console.error(`· couldn't read PR reviews this time; ${cmd("graft init")} again tries again`);
+        }
+        learned.push(...saved);
+      }
+      if (memory.length) {
+        const { saved, cancelled } = await finishMemoryRead(repo, memory, keepFrom<MemoryCandidate>(fromReviews.length));
+        if (saved.length) {
+          console.error(`✓ kept ${saved.length} of the ${memory.length} notes your Claude keeps about this repo`);
+          for (const note of saved) console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${note.title}`);
+        } else if (cancelled) {
+          console.error(`· saved none of the ${memory.length} notes your Claude keeps about this repo; ${cmd("graft init")} again asks again`);
+        }
+        learned.push(...saved);
+      }
       if (pastRead) {
-        const { result, saved, kept, cancelled } = await finishPastRead(repo, pastRead, keepFrom<Finding>(0));
+        const { result, saved, kept, cancelled } = await finishPastRead(repo, pastRead, keepFrom<Finding>(fromReviews.length + memory.length));
         const offered = result.findings.length;
         if (saved.length) {
           const n = saved.length;
           const what = n < offered ? `kept ${n} of the ${offered} things` : `learned ${n} thing${n === 1 ? "" : "s"}`;
-          console.error(`✓ ${what} you told Claude more than once, from your last ${result.read} sessions here`);
+          console.error(`✓ ${what} you told Claude more than once, from your last ${result.read} sessions here, just for you`);
           // Each with how many sessions it was said in: saveFindings keeps the findings' order.
           saved.forEach((note, i) => {
             const said = kept[i]?.sessions.length ?? 0;
             const count = said > 1 ? `told Claude in ${said} sessions: ` : "";
-            console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${count}${note.title}`);
+            console.error(`    just for you  · ${count}${note.title}`);
           });
         } else if (cancelled) {
           console.error(`· saved none of the ${offered} things you told Claude more than once; ${cmd("graft init")} again asks again`);
@@ -1697,35 +1746,18 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
         }
         learned.push(...saved);
       }
-      if (reviewRead) {
-        const { result, saved, kept, cancelled } = await finishReviewRead(repo, reviewRead, keepFrom<ReviewFinding>(fromSessions.length));
-        const offered = result.findings.length;
-        if (saved.length) {
-          const n = saved.length;
-          const what = n < offered ? `kept ${n} of the ${offered} things` : `learned ${n} thing${n === 1 ? "" : "s"}`;
-          console.error(`✓ ${what} reviewers flagged on more than one PR, from the last ${result.prs} merged PRs here`);
-          // saveReviewFindings keeps the findings' order.
-          saved.forEach((note, i) => console.error(`    for your team · flagged in review on ${kept[i]?.prs.length ?? 2} PRs: ${note.title}`));
-        } else if (cancelled) {
-          console.error(`· saved none of the ${offered} things reviewers flagged; ${cmd("graft init")} again asks again`);
-        } else if (offered) {
-          console.error(`· kept none of the ${offered} things reviewers flagged`);
-        } else if (result.reason === "failed") {
-          console.error(`· couldn't read PR reviews this time; ${cmd("graft init")} again tries again`);
-        }
-        learned.push(...saved);
-      }
       learnedNow = learned.length > 0;
+      teamSaved = learned.filter((s) => s.scope === "repo").length;
       if (learnedNow) {
         console.error("· Claude follows them from your next session");
-        if (learned.some((s) => s.scope === "repo")) console.error(commitLines({}, teammatesOn(repo), "repo").uncommitted);
+        if (teamSaved) console.error(commitLines({}, teammatesOn(repo), "repo").uncommitted);
       }
     }
     if (TRAIL && !learnedNow) {
       const home = notesHome.get(repo);
       if (home) {
         const learnings = listNotes(repo, { branches: false }).filter((n) => n.scope === "repo");
-        if (learnings.length === 0) console.error(`✓ learnings  ${LEARNINGS_DIR}/ · sessions that take real digging leave one there, for your whole team`);
+        if (learnings.length === 0) console.error(`✓ learnings  ${LEARNINGS_DIR}/ · a session that fixes a bug, takes a correction or opens a PR leaves one there, for your whole team`);
         else console.error(`✓ learnings  ${learnings.length} in ${LEARNINGS_DIR}/, from ${new Set(learnings.map((n) => n.author || "someone")).size} ${new Set(learnings.map((n) => n.author)).size === 1 ? "person" : "people"}`);
       }
     }
@@ -1775,6 +1807,12 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
           edges: graphs.reduce((n, g) => n + g.meta.edgeCount, 0),
         }),
     );
+    // Run by an agent, not a person: the last line tells it to ask about the
+    // commit, since the person never saw the picker and Claude Code folds the rest.
+    if (teamSaved && !process.stderr.isTTY)
+      console.error(
+        `→ ${teamSaved} team learning${teamSaved === 1 ? "" : "s"} in ${LEARNINGS_DIR}/ ${teamSaved === 1 ? "isn't" : "aren't"} committed yet. Ask the user: "Commit ${teamSaved === 1 ? "it" : `the ${teamSaved}`} so your teammates' Claude starts from ${teamSaved === 1 ? "it" : "them"}? (yes / no)"`,
+      );
     // Sorted so `claude,cursor` and `cursor,claude` aggregate as one value.
     track(
       "init_completed",
