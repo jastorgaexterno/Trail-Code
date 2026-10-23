@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BRAND_ENV } from '../src/brand.js';
 import { main } from '../src/claude/hooks.js';
-import { noteAsk, noteSignals } from '../src/claude/note-signals.js';
+import { fileWordRe, noteAsk, noteSignals } from '../src/claude/note-signals.js';
 import { ensureRepoHome } from '../src/notes/home.js';
 
 let n = 0;
@@ -193,4 +193,11 @@ test('one fail then pass asks once: rerunning the passing check after the answer
   // A new failure and fix is a new sign.
   appendFileSync(t, '\n' + jsonl(prompt('now the timeout bug'), bash('npm test', 'x', true), edit('src/b.ts', d), bash('npm test', 'ok')));
   assert.match(JSON.parse(await stop({ session_id: 's3', transcript_path: t })).reason, /^\[trail\] npm test failed/);
+});
+
+test("a shell edit's file is read whole on Windows too: the drive, backslashes, Git Bash's slashes, a short name", () => {
+  const cmd = "sed -i '' 's/4/6/' C:\\Users\\priya\\shop\\src\\client.ts && cat C:/Users/priya/shop/go.mod D:\\RUNNER~1\\shop\\main.go";
+  assert.deepEqual(cmd.match(fileWordRe('win32')), ['C:\\Users\\priya\\shop\\src\\client.ts', 'D:\\RUNNER~1\\shop\\main.go']);
+  assert.deepEqual("sed -i 's/4/6/' /work/app/src/client.ts".match(fileWordRe('linux')), ['/work/app/src/client.ts']);
+  assert.deepEqual("sed -i 's/4/6/' C:/work/app/src/client.ts".match(fileWordRe('win32')), ['C:/work/app/src/client.ts']);
 });
