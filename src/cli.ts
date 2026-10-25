@@ -979,7 +979,7 @@ program
   .command("mcp", { hidden: TRAIL })
   .description("Serve the graph over MCP (stdio): exposes graft_find_code, graft_trace_calls, graft_find_all, graft_file_api, graft_repo_map and graft_check_freshness as tools")
   .argument(...DIR_ARG)
-  .option("--brains", "serve only the connected Trail workspace's brain tools (what Claude Code gets after init --connect)")
+  .option("--brains", "serve only the paired Trail workspace's tools and skills (what Claude Code gets after init --connect)")
   .action(async (dirArg: string | undefined, opts: { brains?: boolean }) => {
     const { startMcpServer } = await import("./mcp/server.js");
     if (opts.brains) {
@@ -1873,7 +1873,7 @@ async function runConnectInit(dir: string, opts: InitOptions): Promise<void> {
   const sent = await reporter.summary({ tokens, ...(sessions ? { sessions } : {}), learnings, teammates });
   await reporter.stage("done");
   await reporter.flush();
-  // Claude Code gets the workspace's brains through one user-level `trail` entry.
+  // Claude Code gets the workspace's tools and skills through one user-level `trail` entry.
   const brainsEntry = res.ids.includes("claude") && opts.global !== false ? installBrainsServer(homedir()) : null;
   if (sent) {
     const parts = [
@@ -1887,7 +1887,7 @@ async function runConnectInit(dir: string, opts: InitOptions): Promise<void> {
     console.error(`· couldn't send the summary to Trail this time · with a new code from ${base}/welcome/code, ${connectAgain(cmd("graft init"), "<code>", base)} sends it again`);
   }
   if (brainsEntry?.action === "created" || brainsEntry?.action === "updated")
-    console.error(`✓ Claude Code gets your workspace's brains in every project · restart it to pick them up`);
+    console.error(`✓ Claude Code gets your team's learnings and skills in every project · restart it to pick them up`);
 }
 
 /** What one target's wiring did, for the compact summary to report. */
