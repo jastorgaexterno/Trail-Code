@@ -90,6 +90,7 @@ import type { CheckResult } from "./check/types.js";
 import { checkLocally } from "./check/local-check.js";
 import { findLearning, learningFileName, liveLearnings } from "./notes/learning-fields.js";
 import { savedIdLine } from "./notes/replace.js";
+import { ALWAYS_FOLLOW, isAlwaysFollow } from "./notes/units.js";
 import { formatOverlap, maybeRefreshBranches, overlapsWith, pushedWhen, readBranchCache, refreshBranches } from "./notes/branches.js";
 import { ensureRepoTrail, LEARNINGS_DIR } from "./notes/repo-trail.js";
 import type { AskResult } from "./ask/ask.js";
@@ -1150,6 +1151,7 @@ grouped(program.command("note", { hidden: !TRAIL }), GROUP.memory)
   .requiredOption("--title <text>", "what the session was about, in a few words")
   .option("-m, --body <text>", "the learning itself, instead of stdin")
   .option("--personal", "about your own setup or habits, not the code: keep it in ~/.trail, out of the repo")
+  .option("--always-follow", "the person says it must hold even if someone asks otherwise: Claude won't go against it (only on their word)")
   .option("--touches <list>", "comma-separated files or file#Symbol it's about (default: the files this session changed, in every repo it changed)")
   .option("--author <name>", "who wrote it (default: the first word of git config user.name)")
   .option("--minutes <n>", "what it took to work out, when the agent's transcript can't say")
@@ -1235,6 +1237,7 @@ interface NoteOptions {
   tokens?: string;
   json?: boolean;
   personal?: boolean;
+  alwaysFollow?: boolean;
   replaces?: string;
   anyway?: boolean;
 }
@@ -1327,7 +1330,10 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   const saved: Note[] = [];
   for (const t of targets) {
     earlier.push(...listNotes(t.dir));
-    saved.push(writeNote(t.dir, { title: opts.title, body, author, date, branch: currentBranch(t.dir), cost, touches: t.touches, replaces, src: "agent" }, scope));
+    // Always follow is a mark on the learning: written as kind guardrail (what older files and the cloud read), and
+    // standing, so every session starts with it.
+    const mark = opts.alwaysFollow ? { kind: "guardrail" as const, standing: true } : {};
+    saved.push(writeNote(t.dir, { title: opts.title, body, author, date, branch: currentBranch(t.dir), cost, touches: t.touches, replaces, src: "agent", ...mark }, scope));
   }
   const touches = targets.flatMap((t) => t.touches);
   track(
@@ -1340,7 +1346,7 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
     console.log(JSON.stringify(saved.length === 1 ? saved[0] : saved, null, 2));
     return;
   }
-  for (const n of saved) console.log(`✓ ${n.scope === "personal" ? "saved just for you" : "added to this repo"} · ${notePlace(n)}`);
+  for (const n of saved) console.log(`✓ ${n.scope === "personal" ? "saved just for you" : "added to this repo"}${isAlwaysFollow(n) ? `, ${ALWAYS_FOLLOW}` : ""} · ${notePlace(n)}`);
   console.log(savedIdLine(saved));
   const note = saved[0]!;
   // Name a code file if the note touches one; docs are rarely what it's about.

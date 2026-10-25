@@ -144,7 +144,7 @@ export function gateNote(input: GateInput, existing: Note[]): GateResult {
   }
 
   if (!input.personal && !decisionLines(input.body).some((l) => WHY.test(l))) {
-    problems.push('No line says why. Give each decision its reason: the cause, the error it hit, or the number that settled it ("because…", "otherwise…", "fails with…").');
+    problems.push('No line says why. Give each choice its reason: the cause, the error it hit, or the number that settled it ("because…", "otherwise…", "fails with…").');
   }
 
   const twin = repeatOf(input, existing);
