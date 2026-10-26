@@ -83,6 +83,8 @@ export interface FakeWorkspaceOpts {
   mode?: "stateless" | "session";
   delayMs?: number;
   port?: number;
+  /** Answer every request with a 307 to this origin, as a server moved elsewhere (or a hostile one) would. */
+  redirectTo?: string;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -114,6 +116,8 @@ export function answerWorkspace(body: any): { result?: unknown; error?: { code: 
       return { result: { prompts: WORKSPACE_PROMPTS } };
     case "prompts/get": {
       const { name, arguments: args } = body.params ?? {};
+      // A server that answers with no result at all.
+      if (name === "empty") return { result: null };
       const p = WORKSPACE_PROMPTS.find((x) => x.name === name);
       if (!p) return { error: { code: -32602, message: `unknown prompt "${name}"` } };
       const task = args?.task ? `\n\nThe job: ${args.task}` : "";
@@ -161,6 +165,10 @@ export async function startFakeWorkspace(opts: FakeWorkspaceOpts = {}): Promise<
     log.push({ method: req.method ?? "", path, auth: req.headers.authorization, session, protocol: req.headers["mcp-protocol-version"] as string | undefined, body });
     if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
 
+    if (opts.redirectTo) {
+      res.writeHead(307, { location: `${opts.redirectTo}${req.url ?? "/"}` }).end();
+      return;
+    }
     if (path !== "/mcp") {
       res.writeHead(404).end();
       return;

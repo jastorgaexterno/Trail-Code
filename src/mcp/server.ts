@@ -11,9 +11,9 @@ import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion } from '../upkeep.js';
 import { maybeFlushInBackground, track } from '../telemetry/index.js';
 import { brand, inBrand } from '../brand.js';
-import { canonicalToolName } from './tool-names.js';
-import { GRAFT_MCP_TOOL_NAMES } from './tool-names.js';
+import { canonicalToolName, GRAFT_MCP_TOOL_NAMES } from './tool-names.js';
 import { WorkspaceConnector, type RemotePrompt, type RemoteTool } from './connector.js';
+import { KeptListing, within } from './kept-listing.js';
 
 /**
  * MCP tool name → the command enum the telemetry contract knows. A tool absent
@@ -31,39 +31,26 @@ const TOOL_COMMAND: Record<string, string> = {
 };
 
 /**
- * How long the client waits on the workspace (for `initialize`'s
- * instructions, for `tools/list` and `prompts/list`) before trail answers
- * with what it has: a slow cloud never holds the repo tools up for long.
+ * How long the client waits on the workspace, counted once from boot: for
+ * `initialize`'s instructions and the first `tools/list` and `prompts/list`.
+ * After that they answer at once with what they have (kept-listing.ts): a
+ * slow cloud never holds the repo tools up for long.
  */
 const WORKSPACE_WAIT_MS = 4000;
 
 /** What the workspace-only server says when this machine isn't paired (any more). */
 const NOT_CONNECTED_LINE = 'Not connected to a Trail workspace: run `trail init --connect <code>` with the code from team.trailhq.com to use its learnings and skills here.';
 
+/** Said when paired but the workspace said no: a refused token, or a Trail without this connector. */
+const REFUSED_LINE =
+  "Your Trail workspace refused this machine's token, or is an older version without this connector, so its learnings and skills aren't here. Run `trail init --connect <code>` with a new code from team.trailhq.com.";
+
 /** Said when paired but the workspace didn't answer in time. */
 const UNREACHABLE_LINE = "Your Trail workspace didn't answer when this session started, so its learnings and skills may be missing here.";
 
-/** `p`, or `fallback` once `ms` have passed. */
-function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<{ value: T; late: boolean }> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ value: fallback, late: true }), ms);
-    timer.unref();
-    p.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve({ value, late: false });
-      },
-      () => {
-        clearTimeout(timer);
-        resolve({ value: fallback, late: false });
-      },
-    );
-  });
-}
-
 /** Whether a tool name is one of the repo's own (graft_*, trail_* and their old names). */
 function isRepoTool(name: string): boolean {
-  return GRAFT_MCP_TOOL_NAMES.has(name.toLowerCase());
+  return GRAFT_MCP_TOOL_NAMES.has(name.toLowerCase()) || GRAFT_MCP_TOOL_NAMES.has(canonicalToolName(name).toLowerCase());
 }
 
 function send(msg: object): void {
@@ -134,27 +121,21 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
   // The workspace's own MCP server, when this machine is paired with one:
   // started now, so its instructions are in hand by the time the client asks.
   const workspace = new WorkspaceConnector({ version });
-  workspace.warm();
+  // One wait for the workspace, from boot: initialize and the first lists share it, and once it has
+  // passed they answer at once with what they have, and `list_changed` brings the rest.
+  const deadline = Date.now() + WORKSPACE_WAIT_MS;
+  const changed = (method: string) => () => send({ jsonrpc: '2.0', method });
+  const tools = new KeptListing<RemoteTool>(() => workspace.listTools(), changed('notifications/tools/list_changed'));
+  const prompts = new KeptListing<RemotePrompt>(() => workspace.listPrompts(), changed('notifications/prompts/list_changed'));
+  if (workspace.connected()) {
+    workspace.warm();
+    void tools.refresh();
+    void prompts.refresh();
+  }
 
   /** The repo's tools this server lists, under trail as `trail_*` in trail's words. */
   const repoTools = () =>
     (brainsOnly ? [] : advertised(root, dirOverride)).map((t) => ({ name: inBrand(t.name), description: inBrand(t.description), inputSchema: t.inputSchema }));
-
-  /**
-   * A listing from the workspace, waited on for WORKSPACE_WAIT_MS at most.
-   * One that comes in after the client got its answer is announced with
-   * `list_changed`, once, so the client asks again and gets it.
-   */
-  const announced = new Set<string>();
-  async function fromWorkspace<T>(list: () => Promise<T[] | null>, changed: string): Promise<T[]> {
-    const pending = list();
-    const { value, late } = await within(pending, WORKSPACE_WAIT_MS, null);
-    if (late && !announced.has(changed)) {
-      announced.add(changed);
-      pending.then((v) => v && v.length > 0 && send({ jsonrpc: '2.0', method: changed }), () => {});
-    }
-    return value ?? [];
-  }
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on('line', (line) => {
@@ -187,7 +168,9 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
           answer([brainsOnly ? NOT_CONNECTED_LINE : '']);
           return;
         }
-        within(workspace.instructions(), WORKSPACE_WAIT_MS, '').then(({ value }) => answer([value || UNREACHABLE_LINE]));
+        within(workspace.instructions(), deadline - Date.now(), '').then(({ value }) =>
+          answer([value || (workspace.started() ? '' : workspace.refusal() ? REFUSED_LINE : UNREACHABLE_LINE)]),
+        );
         return;
       }
       case 'notifications/initialized':
@@ -205,7 +188,7 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
         }
         // Paired: the workspace's tools too, as it defines them. A repo tool's name wins a clash.
         const taken = new Set(local.map((t) => t.name));
-        fromWorkspace<RemoteTool>(() => workspace.listTools(), 'notifications/tools/list_changed').then((remote) =>
+        tools.get(deadline).then((remote) =>
           reply(id, { tools: [...local, ...remote.filter((t) => !taken.has(t.name))] }),
         );
         return;
@@ -216,14 +199,14 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
           reply(id, { prompts: [] });
           return;
         }
-        fromWorkspace<RemotePrompt>(() => workspace.listPrompts(), 'notifications/prompts/list_changed').then((prompts) => reply(id, { prompts }));
+        prompts.get(deadline).then((list) => reply(id, { prompts: list }));
         return;
       }
       case 'prompts/get': {
         if (isNotification) return;
         // Every prompt is the workspace's: the repo serves none. Never throws.
         workspace.getPrompt(String(params?.name ?? ''), (params?.arguments ?? {}) as Record<string, unknown>).then((r) =>
-          'result' in r ? reply(id, r.result as object) : replyError(id, r.error.code, r.error.message),
+          'result' in r ? reply(id, (r.result ?? {}) as object) : replyError(id, r.error.code, r.error.message),
         );
         return;
       }

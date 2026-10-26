@@ -22,11 +22,20 @@
  * Nothing here throws. A listing that can't be had is null; a call that
  * can't be made is an MCP error result the agent can read.
  */
-import { readCloud, type Cloud } from '../cloud/workspace.js';
+import { isLocalServer, readCloud, serverUrl, type Cloud } from '../cloud/workspace.js';
 
-/** The workspace's MCP server: TRAIL_MCP_URL, else `<trail>/mcp`. */
-export function connectorUrl(cloud: Pick<Cloud, 'url'>, env: NodeJS.ProcessEnv = process.env): string {
-  return (env.TRAIL_MCP_URL || `${cloud.url.replace(/\/+$/, '')}/mcp`).replace(/\/+$/, '');
+/**
+ * The workspace's MCP server: `<trail>/mcp`, or null when the pairing has no
+ * address. TRAIL_MCP_URL moves it only to the paired Trail's own origin or to
+ * a host on this machine (as TRAIL_TEST_SERVER does): the token goes with
+ * every request, and no variable left in a shell sends it anywhere else.
+ */
+export function connectorUrl(cloud: Pick<Cloud, 'url'>, env: NodeJS.ProcessEnv = process.env): string | null {
+  const base = typeof cloud.url === 'string' ? serverUrl(cloud.url) : null;
+  if (!base) return null;
+  const over = serverUrl(env.TRAIL_MCP_URL);
+  if (over && (new URL(over).origin === new URL(base).origin || isLocalServer(over))) return over;
+  return `${base}/mcp`;
 }
 
 /** A tool as the workspace defines it, passed on whole (schema, annotations, title). */
@@ -59,7 +68,11 @@ const PROTOCOL = '2025-06-18';
 const MAX_PAGES = 20;
 
 const NOT_CONNECTED = 'not connected to a Trail workspace · run `trail init --connect <code>` with the code from team.trailhq.com';
-const TOKEN_REFUSED = 'your Trail workspace token was not accepted; run `trail init --connect <code>` with a new code from team.trailhq.com';
+const TOKEN_REFUSED = "your Trail workspace refused this machine's token; run `trail init --connect <code>` with a new code from team.trailhq.com";
+const NO_CONNECTOR = "your Trail doesn't serve this connector (an older version); its learnings and skills will show here once it does";
+
+/** How long calls fail at once after a start that failed, before one tries again. */
+const BACKOFF_MS = 30_000;
 
 /** An answer from the workspace that wasn't a result. */
 class ConnectorError extends Error {
@@ -69,9 +82,16 @@ class ConnectorError extends Error {
     readonly sessionLost = false,
     /** A JSON-RPC error from the server, worth passing on as it is. */
     readonly rpc?: { code: number; message: string },
+    /** The workspace said no to the token, or has no connector: not a network fault. */
+    readonly refused = false,
   ) {
     super(message);
   }
+}
+
+/** A JSON-RPC answer to `id`: it carries a result or an error. */
+function isReply(m: any, id: number): boolean {
+  return !!m && typeof m === 'object' && m.id === id && ('result' in m || 'error' in m);
 }
 
 /** The JSON-RPC message answering `id`, from a JSON body or an SSE stream. */
@@ -87,7 +107,7 @@ function pickReply(contentType: string, text: string, id: number): any {
       if (!data) continue;
       try {
         const msg = JSON.parse(data);
-        if (msg && msg.id === id) return msg;
+        if (isReply(msg, id)) return msg;
       } catch {
         /* a partial event */
       }
@@ -96,8 +116,8 @@ function pickReply(contentType: string, text: string, id: number): any {
   }
   try {
     const msg = JSON.parse(text);
-    if (Array.isArray(msg)) return msg.find((m) => m?.id === id) ?? null;
-    return msg;
+    if (Array.isArray(msg)) return msg.find((m) => isReply(m, id)) ?? null;
+    return isReply(msg, id) ? msg : null;
   } catch {
     return null;
   }
@@ -127,6 +147,8 @@ export class WorkspaceConnector {
   private nextId = 1;
   private session: Session | null = null;
   private starting: Promise<Session> | null = null;
+  /** The last start that failed: when, and why, so calls fail at once for a while. */
+  private failed: { at: number; err: unknown } | null = null;
 
   constructor(
     private readonly opts: { env?: NodeJS.ProcessEnv; fetchImpl?: Fetch; timeoutMs?: number; callTimeoutMs?: number; version?: string } = {},
@@ -150,7 +172,8 @@ export class WorkspaceConnector {
     };
     if (s.id) headers['mcp-session-id'] = s.id;
     if (s.protocol) headers['mcp-protocol-version'] = s.protocol;
-    return f(s.url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+    // Never follow a redirect: it would carry the token to wherever it points.
+    return f(s.url, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
   }
 
   /** One request, its result or a ConnectorError. */
@@ -158,7 +181,8 @@ export class WorkspaceConnector {
     const id = this.nextId++;
     const res = await this.post(s, { jsonrpc: '2.0', id, method, ...(params ? { params } : {}) }, timeoutMs);
     const text = await res.text();
-    if (res.status === 401 || res.status === 403) throw new ConnectorError(TOKEN_REFUSED);
+    if (res.status === 401 || res.status === 403) throw new ConnectorError(TOKEN_REFUSED, false, undefined, true);
+    if (res.status === 404 && method === 'initialize') throw new ConnectorError(NO_CONNECTOR, false, undefined, true);
     // A session the server no longer knows: 404 by the spec, 400 from some servers.
     if ((res.status === 404 || res.status === 400) && 'id' in s && s.id) throw new ConnectorError('the Trail workspace dropped the session', true);
     if (!res.ok) throw new ConnectorError(`the Trail workspace answered ${res.status}`);
@@ -171,13 +195,19 @@ export class WorkspaceConnector {
     return { result: msg.result, res };
   }
 
-  /** Initialize once per pairing (token and address); a new pairing starts again. */
-  private ready(): Promise<Session> {
+  /**
+   * Initialize once per pairing (token and address); a new pairing starts
+   * again. Async, so a pairing file that can't be used is a rejection, never
+   * a throw. After a failed start, calls fail at once for BACKOFF_MS.
+   */
+  private async ready(): Promise<Session> {
     const cloud = this.cloud();
-    if (!cloud) return Promise.reject(new ConnectorError(NOT_CONNECTED));
+    if (!cloud) throw new ConnectorError(NOT_CONNECTED);
     const url = connectorUrl(cloud, this.opts.env);
-    if (this.session && this.session.token === cloud.token && this.session.url === url) return Promise.resolve(this.session);
+    if (!url) throw new ConnectorError(NOT_CONNECTED);
+    if (this.session && this.session.token === cloud.token && this.session.url === url) return this.session;
     if (this.starting) return this.starting;
+    if (this.failed && Date.now() - this.failed.at < BACKOFF_MS) throw this.failed.err;
     this.session = null;
     const start = (async () => {
       const base = { token: cloud.token, url };
@@ -202,8 +232,14 @@ export class WorkspaceConnector {
     })();
     this.starting = start;
     start.then(
-      () => (this.starting = null),
-      () => (this.starting = null),
+      () => {
+        this.starting = null;
+        this.failed = null;
+      },
+      (err) => {
+        this.starting = null;
+        this.failed = { at: Date.now(), err };
+      },
     );
     return start;
   }
@@ -223,6 +259,17 @@ export class WorkspaceConnector {
   /** Start talking to the workspace now, so its answers are in hand when the client asks. */
   warm(): void {
     if (this.connected()) this.ready().catch(() => {});
+  }
+
+  /** Whether a session with the workspace is open (its instructions, even empty ones, are in hand). */
+  started(): boolean {
+    return this.session !== null;
+  }
+
+  /** Why the last start failed, when the workspace said no (a refused token, no connector); null otherwise. */
+  refusal(): string | null {
+    const e = this.failed?.err;
+    return e instanceof ConnectorError && e.refused ? e.message : null;
   }
 
   /** The workspace's own instructions, '' when not paired or not reachable. */
