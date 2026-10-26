@@ -31,7 +31,7 @@ test("one screen: the team rows first under their own heading and ticked, then t
   const at = (l: string) => lines.indexOf(l);
   assert.ok(at("Your teammates' Claude doesn't know these yet") > 0, lines.join("\n"));
   assert.ok(lines.includes("› [x] 1  Return a 500 when db.query fails in src/api"));
-  assert.ok(lines.includes("         From review on PR #41, #38. · added to this repo"));
+  assert.ok(lines.includes("         From PR #41, #38. · added to this repo"));
   assert.ok(lines.includes("  [x] 2  Retries stay at 4 because the gateway times out"));
   assert.ok(lines.includes("         From what your Claude keeps about this repo. · added to this repo"));
   assert.equal(lines.filter((l) => l === "Your teammates' Claude doesn't know these yet").length, 1, "one heading for both sources");

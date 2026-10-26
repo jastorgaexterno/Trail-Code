@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { tmpRepo } from "./helpers.js";
@@ -33,8 +33,8 @@ function githubRepo(): string {
   return repo;
 }
 
-/** A signed-in `gh` that answers the GraphQL call, and a `claude` that names one finding from the reviews; both log. */
-function fakeTools(): { bin: string; log: string } {
+/** A signed-in `gh` that answers the GraphQL call, and a `claude` that names one finding from the reviews (and `sessions` from past sessions); both log. */
+function fakeTools(sessions: object[] = []): { bin: string; log: string } {
   const bin = mkdtempSync(join(tmpdir(), "pair-tools-"));
   const log = join(bin, "log");
   mkdirSync(log);
@@ -61,8 +61,10 @@ let input = "";
 process.stdin.on("data", (b) => (input += b));
 process.stdin.on("end", () => {
   const review = input.startsWith("This repository's recent pull requests");
-  fs.writeFileSync(${JSON.stringify(log)} + (review ? "/reviews.txt" : "/other.txt"), input);
-  console.log(JSON.stringify({ is_error: false, total_cost_usd: 0.01, structured_output: review ? ${JSON.stringify(reviews)} : { findings: [] } }));
+  const past = input.startsWith("Past Claude Code sessions in this repository");
+  fs.writeFileSync(${JSON.stringify(log)} + (review ? "/reviews.txt" : past ? "/sessions.txt" : "/other.txt"), input);
+  const answer = review ? ${JSON.stringify(reviews)} : past ? { findings: ${JSON.stringify(sessions)} } : { findings: [] };
+  console.log(JSON.stringify({ is_error: false, total_cost_usd: 0.01, structured_output: answer }));
 });
 `,
   );
@@ -198,3 +200,85 @@ for (const [how, entry] of [["graft", join("src", "bin", "graft.ts")], ["no name
     }
   });
 }
+
+/* ---- Both reads together: past sessions and the PRs ---- */
+
+/** One past session in `repo`, today, where the person corrected Claude. */
+function pastSession(repo: string, home: string): void {
+  const dir = join(home, ".claude", "projects", repo.replace(/[^A-Za-z0-9]/g, "-"));
+  mkdirSync(dir, { recursive: true });
+  const at = new Date().toISOString();
+  const row = (o: object) => JSON.stringify({ cwd: repo, timestamp: at, sessionId: "abcdef12-3456", ...o });
+  writeFileSync(
+    join(dir, "abcdef12-3456.jsonl"),
+    [
+      row({ type: "user", message: { role: "user", content: "make the orders endpoint faster with a cache" } }),
+      row({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "I can add an in-memory cache in front of db.query for the orders list." }] } }),
+      row({ type: "user", message: { role: "user", content: "no, we tried caching orders last month and it served stale totals, keep reading from the database" } }),
+    ].join("\n") + "\n",
+  );
+}
+
+const fromSessions = {
+  headline: "Orders are read fresh from the database, not cached",
+  why: "A cache was tried and served stale totals.",
+  for_agent: "src/api/orders.ts reads with db.query on every request.",
+  kind: "ruled_out",
+  evidence: [{ source: "session abcdef12", quote: "we tried caching orders last month and it served stale totals" }],
+};
+
+const titlesIn = (repo: string) =>
+  readdirSync(join(repo, ".trail", "learnings"))
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => readFileSync(join(repo, ".trail", "learnings", f), "utf8").match(/^title: "?(.*?)"?$/m)?.[1] ?? "")
+    .sort();
+
+test("init --pair reads past sessions and the PRs together: both learnings saved with plain titles, each said as it lands", { skip: process.platform === "win32" }, async () => {
+  const trail = await standInTrail();
+  try {
+    const home = tmpRepo("both-reads-home");
+    mkdirSync(join(home, ".claude"));
+    const repo = githubRepo();
+    pastSession(repo, home);
+    const { bin, log } = fakeTools([fromSessions]);
+    const r = await agentInit(repo, home, bin, ["--pair", "X4GM5OQU4NIA65ZR", "--server", trail.url]);
+    assert.equal(r.code, 0, r.err);
+    const sent = readFileSync(join(log, "sessions.txt"), "utf8");
+    assert.match(sent, /\[person\] no, we tried caching orders last month/);
+    assert.match(sent, /\[claude\] I can add an in-memory cache/, "Claude's side is read too");
+    assert.deepEqual(titlesIn(repo), ["API handlers report database failures instead of hiding them", "Orders are read fresh from the database, not cached"]);
+    assert.match(r.err, /· found 1 learning in your past sessions, e\.g\. "Orders are read fresh from the database, not cached"/);
+    assert.match(r.err, /· found 1 learning in this repo's pull requests/);
+    const decisions = trail.progress().map((p) => (p.phases as PhaseRow[] | undefined)?.find((ph) => ph.id === "decisions")).filter(Boolean).at(-1);
+    assert.equal(decisions?.count, "1 learning", "the page counts what the session read found");
+    const saved = readFileSync(join(repo, ".trail", "learnings", readdirSync(join(repo, ".trail", "learnings")).find((f) => f.includes("orders-are-read"))!), "utf8");
+    assert.match(saved, /## Tried and ruled out\n- A cache was tried and served stale totals\.\n- In the code: src\/api\/orders\.ts reads with db\.query on every request\./);
+    assert.match(saved, /src: init-sessions/);
+
+    // Again: both reads are marked done for this repo, so Claude isn't asked twice.
+    rmSync(log, { recursive: true });
+    mkdirSync(log);
+    const again = await agentInit(repo, home, bin, ["--pair", "X4GM5OQU4NIA65ZR", "--server", trail.url]);
+    assert.equal(again.code, 0, again.err);
+    assert.ok(!existsSync(join(log, "sessions.txt")) && !existsSync(join(log, "reviews.txt")), "nothing read twice");
+  } finally {
+    trail.close();
+  }
+});
+
+test("the same learning from past sessions and the PRs is saved once, as the PR one", { skip: process.platform === "win32" }, async () => {
+  const trail = await standInTrail();
+  try {
+    const home = tmpRepo("same-twice-home");
+    mkdirSync(join(home, ".claude"));
+    const repo = githubRepo();
+    pastSession(repo, home);
+    const twin = { ...fromSessions, headline: "API handlers report database failures, never hiding them", evidence: [{ source: "abcdef12", quote: "keep reading from the database" }] };
+    const { bin } = fakeTools([twin]);
+    const r = await agentInit(repo, home, bin, ["--pair", "X4GM5OQU4NIA65ZR", "--server", trail.url]);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(titlesIn(repo), ["API handlers report database failures instead of hiding them"]);
+  } finally {
+    trail.close();
+  }
+});

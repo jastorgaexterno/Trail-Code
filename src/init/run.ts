@@ -24,6 +24,8 @@
  */
 import { createHash } from 'node:crypto';
 import { anchoredReviews, finishReviewRead, beginReviewRead, type ReviewFinding, type ReviewRead, type ReviewResult } from '../notes/pr-reviews.js';
+import { beginSessionRead, finishSessionRead, offeredSessions, type SessionRead, type SessionResult } from '../learn/sessions.js';
+import type { Learning } from '../learn/bar.js';
 import { finishMemoryRead, memoryCandidates, offeredBefore, type MemoryCandidate } from '../notes/memory-notes.js';
 import type { Note } from '../notes/notes.js';
 import { repoPlace } from '../notes/home.js';
@@ -60,6 +62,8 @@ export function mayCallClaude(env: NodeJS.ProcessEnv, flags: { plain: boolean },
 export interface LookBackReads {
   lb: Promise<LookBackResult> | null;
   reviews: ReviewRead | null;
+  /** What past sessions say was decided here, read by the person's own Claude Code; null when not read this run. */
+  sessions: SessionRead | null;
   /** #662: Claude Code's memory notes about the repo, fit for the team. Read with no model, look-back due or not. */
   memory: MemoryCandidate[];
   person: PersonCheck;
@@ -85,7 +89,7 @@ export function beginLookBack(repo: string, opts: { env?: NodeJS.ProcessEnv; pla
   const model = !agent && mayCallClaude(env, { plain }, opts.deps ?? {}, person);
   const skills = readSettings(env).skills === 'on';
   const memory = memoryRows(repo, env.HOME);
-  const reads: LookBackReads = { lb: null, reviews: null, memory, person, agent, model, plain, skills, env, started: Date.now() };
+  const reads: LookBackReads = { lb: null, reviews: null, sessions: null, memory, person, agent, model, plain, skills, env, started: Date.now() };
   if (lookBackOff(env) || !(opts.again || lookBackDue(repo, env))) return { reads, lines: [] };
   reads.lb = lookBackOffThread(repo, { env, capMs: agent ? AGENT_CAP_MS : PERSON_CAP_MS, skills });
   const lines = ['· looking back at your past Claude Code sessions here (about a minute)'];
@@ -94,6 +98,9 @@ export function beginLookBack(repo: string, opts: { env?: NodeJS.ProcessEnv; pla
   const reviews = model || (opts.pair === true && !plain);
   reads.reviews = reviews ? beginReviewRead(repo, env, 'gh', agent ? AGENT_CAP_MS : undefined) : null;
   if (reads.reviews) lines.push("· reading this repo's pull requests for what the team decided and ruled out");
+  // The same rule starts the session read: it goes to the person's own Claude Code, on this machine.
+  reads.sessions = reviews ? beginSessionRead(repo, env, { ...(agent ? { capMs: AGENT_CAP_MS } : {}), again: opts.again === true }) : null;
+  if (reads.sessions) lines.push('· reading what was decided in your past Claude sessions here, with your Claude Code on this laptop');
   return { reads, lines };
 }
 
@@ -123,6 +130,18 @@ function reviewItems(anchored: ReviewFinding[], repoKey: string, closed: Set<str
   }).filter((c) => !closed.has(c.id));
 }
 
+/** What past sessions say was decided, as team rows: model text, so shown on the screen only, never relayed. Ticked. */
+function sessionItems(offered: Learning[], repoKey: string, closed: Set<string>): InitItem[] {
+  return offered.map((l, n) => {
+    const key = `session:${createHash('sha256').update(norm(l.headline)).digest('hex').slice(0, 16)}`;
+    return {
+      id: candidateId('session', key), kind: 'session' as const, key, plainName: '', nameWords: leadWords(l.headline),
+      count: { days: l.sources.length, from: l.last, to: l.last }, scope: 'repo' as const, applies: repoKey, typed: false, ticked: true,
+      evidence: [], rank: n + 1, n: 0, title: l.headline, description: '',
+    };
+  }).filter((c) => !closed.has(c.id));
+}
+
 /** #662's memory candidates as team rows, ticked. Never relayed: with no screen, #662 keeps them itself. */
 function memoryItems(memory: MemoryCandidate[], repoKey: string): InitItem[] {
   return memory.map((c, n) => {
@@ -135,7 +154,7 @@ function memoryItems(memory: MemoryCandidate[], repoKey: string): InitItem[] {
   });
 }
 
-const isTeam = (i: Pick<InitItem, 'kind'>) => i.kind === 'review' || i.kind === 'claude';
+const isTeam = (i: Pick<InitItem, 'kind'>) => i.kind === 'review' || i.kind === 'session' || i.kind === 'claude';
 
 /** For a run with no look-back (not due, or off), so #662's team rows can still be shown. */
 const NO_LOOK_BACK: LookBack = {
@@ -145,6 +164,7 @@ const NO_LOOK_BACK: LookBack = {
 /** What #662's keeps saved with no screen, for init to say in #662's words (cli.ts). */
 export interface TeamKept {
   fromReviews: { result: ReviewResult; saved: Note[]; kept: ReviewFinding[]; offered: number } | null;
+  fromSessions: { result: SessionResult; saved: Note[]; kept: Learning[]; offered: number } | null;
   fromMemory: { saved: Note[]; offered: number } | null;
 }
 
@@ -190,6 +210,11 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
   const say = mode.say;
   const now = mode.now ?? new Date();
   const looked = reads.lb !== null;
+  // Each read's learnings are said the moment it lands, before the others finish.
+  const landed = (n: number, where: string, top: string | undefined) =>
+    n ? say(`· found ${n} learning${n === 1 ? '' : 's'} ${where}${top ? `, e.g. "${top}"` : ''}`) : undefined;
+  void reads.sessions?.result.then((r) => landed(r.findings.length, 'in your past sessions', r.findings[0]?.headline), () => undefined);
+  void reads.reviews?.result.then((r) => landed(r.findings.length, "in this repo's pull requests", r.findings[0]?.title), () => undefined);
   let lb: LookBackResult = NO_LOOK_BACK;
   if (reads.lb) {
     let settled = false;
@@ -214,6 +239,11 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
     if (!reads.reviews.done) say('· still reading PR reviews…');
     reviewResult = await reads.reviews.result.catch(() => null);
   }
+  let sessionResult: SessionResult | null = null;
+  if (reads.sessions) {
+    if (!reads.sessions.done) say('· still reading your past sessions…');
+    sessionResult = await reads.sessions.result.catch(() => null);
+  }
   const named = await namedP;
   const read = { sessions: lb.sessions.length, prs: reviewResult ? reviewResult.prs : null };
   // The look-back's own five, numbered 1..k for the relay and `trail keep`.
@@ -221,10 +251,14 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
   const skills: FoundSkill[] = items.filter((i) => i.kind === 'skill').map((i) => ({ id: i.id, name: i.plainName, title: i.title, days: i.count.days }));
   // #662's team rows: only findings tied to code that exists, and the memory notes; never relayed.
   const anchored = reviewResult ? anchoredReviews(repo, reviewResult.findings) : [];
-  const team = [...reviewItems(anchored, repoKey, new Set([...record.closed, ...record.runs.flatMap((r) => r.kept)])), ...memoryItems(reads.memory, repoKey)];
+  const done = new Set([...record.closed, ...record.runs.flatMap((r) => r.kept)]);
+  // The same learning from the PRs and from past sessions is offered once: the PR one, which says where it came from.
+  const prTitles = anchored.map((f) => f.title);
+  const fromPast = sessionResult ? offeredSessions(repo, sessionResult.findings, prTitles) : [];
+  const team = [...reviewItems(anchored, repoKey, done), ...sessionItems(fromPast, repoKey, done), ...memoryItems(reads.memory, repoKey)];
   const s = readSettings(env);
   const facts: ScreenFacts = {
-    lookBack: lb, model: named.model, why: named.why, tokens: named.tokens, calls: (named.sentItems ? 1 : 0) + (reads.reviews ? 1 : 0),
+    lookBack: lb, model: named.model, why: named.why, tokens: named.tokens, calls: (named.sentItems ? 1 : 0) + (reads.reviews ? 1 : 0) + (reads.sessions ? 1 : 0),
     offers: s.offers, offersOffAt: s.offersOffAt, repoName: repoNameOf(repoKey), agent, skills: reads.skills,
     sentSkills: named.sentItems, reviewsRead: reviewResult?.read ?? 0, ...(named.said ? { whySaid: named.said } : {}),
     ...(looked ? {} : { lookedBack: false }),
@@ -270,6 +304,12 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
       const r = await finishReviewRead(repo, reads.reviews, chosen === undefined ? undefined : async (f) => (chosen === null ? null : f.filter((x) => titles.has(x.title))));
       fromReviews = { ...r, offered: anchored.length };
     }
+    let fromSessions: TeamKept['fromSessions'] = null;
+    if (reads.sessions) {
+      const chosen = choose(team.filter((i) => i.kind === 'session'));
+      const titles = new Set((chosen ?? []).map((i) => i.title));
+      fromSessions = await finishSessionRead(repo, reads.sessions, chosen === undefined ? undefined : async (f) => (chosen === null ? null : f.filter((x) => titles.has(x.headline))), prTitles);
+    }
     let fromMemory: TeamKept['fromMemory'] = null;
     if (reads.memory.length) {
       const chosen = choose(memoryRows);
@@ -277,8 +317,8 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
       const r = await finishMemoryRead(repo, reads.memory, chosen === undefined ? undefined : async (c) => (chosen === null ? null : c.filter((x) => paths.has(x.path))));
       fromMemory = { saved: r.saved, offered: reads.memory.length };
     }
-    const saved = [...(fromReviews?.saved ?? []), ...(fromMemory?.saved ?? [])];
-    return { fromReviews, fromMemory, team: saved.filter((n) => n.scope === 'repo').length };
+    const saved = [...(fromReviews?.saved ?? []), ...(fromSessions?.saved ?? []), ...(fromMemory?.saved ?? [])];
+    return { fromReviews, fromSessions, fromMemory, team: saved.filter((n) => n.scope === 'repo').length };
   };
 
   if (!shown.length) {
@@ -288,6 +328,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
       if (!lb.errors.length) markLookedBack(repo, now, env);
     }
     if (reads.reviews) await finishReviewRead(repo, reads.reviews, async () => []);
+    if (reads.sessions) await finishSessionRead(repo, reads.sessions, async () => []);
     tele('none_found', 0);
     return { ...none, read, skills };
   }
@@ -320,10 +361,11 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
       const keptTeam = picked.filter(isTeam);
       teamSaved = (await keepTeam((rows) => rows.filter((r) => keptTeam.some((k) => k.id === r.id)))).team;
       result = { ...result, kept: [...keptTeam, ...result.kept], notKept: final.filter((i) => !picked.includes(i)) };
-      const keptReviews = keptTeam.filter((i) => i.kind === 'review');
-      if (keptReviews.length || final.some((i) => i.kind === 'review' && !picked.includes(i))) {
+      const offeredRow = (i: Pick<InitItem, 'kind'>) => i.kind === 'review' || i.kind === 'session';
+      const keptReviews = keptTeam.filter(offeredRow);
+      if (keptReviews.length || final.some((i) => offeredRow(i) && !picked.includes(i))) {
         updateInitRecord(repoKey, (r) => {
-          r.closed = [...new Set([...r.closed, ...final.filter((i) => i.kind === 'review' && !picked.includes(i)).map((i) => i.id)])];
+          r.closed = [...new Set([...r.closed, ...final.filter((i) => offeredRow(i) && !picked.includes(i)).map((i) => i.id)])];
           const me = r.runs.find((x) => x.id === run.id);
           if (me) me.kept = [...new Set([...me.kept, ...keptReviews.map((i) => i.id)])];
         }, env);
@@ -367,6 +409,6 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
   }
   if (looked && !reads.skills) say(INIT_COPY.skillsOff!);
   tele('relayed', kept);
-  const teamKept = (fromTeam.fromReviews?.saved.length ?? 0) + (fromTeam.fromMemory?.saved.length ?? 0);
-  return { kept: kept + teamKept, inRepo: fromTeam.team > 0, team: fromTeam.team, teamKept: { fromReviews: fromTeam.fromReviews, fromMemory: fromTeam.fromMemory }, read, skills };
+  const teamKept = (fromTeam.fromReviews?.saved.length ?? 0) + (fromTeam.fromSessions?.saved.length ?? 0) + (fromTeam.fromMemory?.saved.length ?? 0);
+  return { kept: kept + teamKept, inRepo: fromTeam.team > 0, team: fromTeam.team, teamKept: { fromReviews: fromTeam.fromReviews, fromSessions: fromTeam.fromSessions, fromMemory: fromTeam.fromMemory }, read, skills };
 }
