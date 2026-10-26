@@ -1,0 +1,62 @@
+/**
+ * The one bar every learning read uses: what a learning's file looks like,
+ * which quotes count, and how a headline is kept plain.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { learningBody, plainHeadline, sameLearning, verifyLearnings, type Learning } from "../src/learn/bar.js";
+import { norm } from "../src/init/look-back.js";
+
+const base: Learning = {
+  headline: "Failed decks were not timeouts: the AI proxy refused every call",
+  why: "Prod logs showed the proxy refused it.",
+  forAgent: "internal/llm/llm.go sends user and tags.",
+  kind: "ruled_out",
+  sources: ["s1"],
+  quotes: [],
+  last: "2026-10-26",
+};
+
+test("learningBody puts a ruled_out learning under Tried and ruled out", () => {
+  assert.equal(
+    learningBody(base, "_From past Claude sessions here._"),
+    "## Tried and ruled out\n- Prod logs showed the proxy refused it.\n- In the code: internal/llm/llm.go sends user and tags.\n\n_From past Claude sessions here._",
+  );
+  assert.match(learningBody({ ...base, kind: "decided" }, "x"), /^## Decided\n/);
+  assert.match(learningBody({ ...base, kind: "watch_out" }, "x"), /^## Watch out\n/);
+});
+
+test("learningBody leaves out an empty In the code line", () => {
+  assert.equal(learningBody({ ...base, kind: "decided", forAgent: "  " }, "x"), "## Decided\n- Prod logs showed the proxy refused it.\n\nx");
+});
+
+test("verifyLearnings drops a learning whose quote isn't in its source", () => {
+  const sources = [{ id: "s1", at: "2026-10-20T00:00:00Z", said: [norm("also remember signup should be done as the first thing not after any screen")] }];
+  const raw = [
+    { headline: "Sign-up comes first", why: "w", for_agent: "a", kind: "decided", evidence: [{ source: "session s1", quote: "signup should be done as the first thing" }] },
+    { headline: "Invented", why: "w", for_agent: "a", kind: "decided", evidence: [{ source: "s1", quote: "nobody ever typed these words at all" }] },
+  ];
+  const out = verifyLearnings(raw, sources);
+  assert.equal(out.length, 1);
+  assert.equal(out[0]!.headline, "Sign-up comes first");
+  assert.deepEqual(out[0]!.sources, ["s1"]);
+  assert.equal(out[0]!.last, "2026-10-20");
+});
+
+test("verifyLearnings keeps eight at most and drops an unknown kind", () => {
+  const sources = [{ id: "p1", at: "2026-10-20T00:00:00Z", said: [norm("we must not add platform specific code here")] }];
+  const one = (i: number, kind = "decided") => ({ headline: `h${i}`, why: "w", for_agent: "", kind, evidence: [{ source: "p1", quote: "must not add platform specific code" }] });
+  assert.equal(verifyLearnings([...Array(12).keys()].map((i) => one(i)), sources).length, 8);
+  assert.equal(verifyLearnings([one(1, "praise")], sources).length, 0);
+});
+
+test("plainHeadline removes em dashes and keeps one line", () => {
+  assert.equal(plainHeadline("Sign-up first — always"), "Sign-up first, always");
+  assert.equal(plainHeadline("Two\nlines – here"), "Two lines, here");
+  assert.ok(plainHeadline("x".repeat(300)).length <= 100);
+});
+
+test("sameLearning matches a reworded headline", () => {
+  assert.equal(sameLearning("Sign-up comes first, before any onboarding screen", "Sign-up always comes first before onboarding"), true);
+  assert.equal(sameLearning("Sign-up comes first, before any onboarding screen", "Every AI call must name a user and tags"), false);
+});
