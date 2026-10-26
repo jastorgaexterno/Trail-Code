@@ -156,18 +156,13 @@ export interface SessionResult {
  */
 export async function findSessionLearnings(
   repo: string,
-  opts: { env?: NodeJS.ProcessEnv; capMs?: number; since?: string; model?: string; full?: boolean } = {},
+  opts: { env?: NodeJS.ProcessEnv; capMs?: number; since?: string; model?: string; full?: boolean; found?: PastSession[] } = {},
 ): Promise<SessionResult> {
   const env = opts.env ?? process.env;
   const model = opts.model ?? COLD_START_MODEL;
   const started = Date.now();
   const left = () => (opts.capMs === undefined ? Infinity : opts.capMs - (Date.now() - started));
-  let found: PastSession[] = [];
-  try {
-    found = discoverSessions(repo, env.HOME || homedir(), new Date(), env).sessions;
-  } catch {
-    found = [];
-  }
+  const found = opts.found ?? pastSessions(repo, env);
   const newest = found.reduce<string | undefined>((m, s) => (!m || s.at > m ? s.at : m), undefined);
   const sessions = opts.since ? found.filter((s) => s.at > opts.since!) : found;
   const base = { sessions: sessions.length, read: 0, findings: [] as Learning[], model, ...(newest ? { newest } : {}) };
@@ -189,6 +184,14 @@ export async function findSessionLearnings(
   return { ...base, read: read.length, findings, durationMs, costUsd: asked.costUsd, reason: findings.length ? undefined : "none_found" };
 }
 
+function pastSessions(repo: string, env: NodeJS.ProcessEnv): PastSession[] {
+  try {
+    return discoverSessions(repo, env.HOME || homedir(), new Date(), env).sessions;
+  } catch {
+    return [];
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* At trail init                                                              */
 /* -------------------------------------------------------------------------- */
@@ -206,8 +209,9 @@ export interface SessionRead {
 
 /**
  * Start reading the repo's past sessions, for `trail init` to collect at its
- * end; null when they were read on this machine before (unless `again`, which
- * reads the sessions since), or TRAIL_NO_FETCH is set.
+ * end; null when there are none to read (none here, or none since the last
+ * read with `again`), they were read on this machine before (unless `again`),
+ * or TRAIL_NO_FETCH is set.
  */
 export function beginSessionRead(repo: string, env: NodeJS.ProcessEnv = process.env, opts: { capMs?: number; again?: boolean } = {}): SessionRead | null {
   try {
@@ -215,7 +219,9 @@ export function beginSessionRead(repo: string, env: NodeJS.ProcessEnv = process.
     const mark = readJson<{ at?: number; newest?: string }>(readMark(repo));
     if (mark?.at && !opts.again) return null;
     const since = mark?.at ? mark.newest : undefined;
-    const read: SessionRead = { started: Date.now(), done: false, result: findSessionLearnings(repo, { env, ...(opts.capMs === undefined ? {} : { capMs: opts.capMs }), ...(since ? { since } : {}) }) };
+    const found = pastSessions(repo, env);
+    if (!found.some((s) => !since || s.at > since)) return null;
+    const read: SessionRead = { started: Date.now(), done: false, result: findSessionLearnings(repo, { env, found, ...(opts.capMs === undefined ? {} : { capMs: opts.capMs }), ...(since ? { since } : {}) }) };
     void read.result.then(() => (read.done = true));
     return read;
   } catch {

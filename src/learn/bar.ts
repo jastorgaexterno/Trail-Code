@@ -87,13 +87,26 @@ export const LEARNING_SCHEMA = {
 
 const KINDS: Record<LearningKind, string> = { decided: "Decided", ruled_out: "Tried and ruled out", watch_out: "Watch out" };
 
-/** One line, no em or en dashes, at most 100 characters. */
+const HEADLINE_CHARS = 100;
+
+/**
+ * One line, no em or en dashes, at most 100 characters. A longer one ends at
+ * its last semicolon, else its last comma, inside the limit when that keeps 6
+ * words; else at a whole word, with "…".
+ */
 export function plainHeadline(s: string): string {
   const t = s
     .replace(/\s*[—–]\s*/g, ", ")
     .replace(/\s+/g, " ")
     .trim();
-  return t.length > 100 ? `${t.slice(0, 99).trimEnd()}…` : t;
+  if (t.length <= HEADLINE_CHARS) return t;
+  const head = t.slice(0, HEADLINE_CHARS);
+  for (const brk of ["; ", ", "]) {
+    const at = head.lastIndexOf(brk);
+    if (at > 0 && head.slice(0, at).split(" ").length >= 6) return head.slice(0, at);
+  }
+  const word = head.slice(0, HEADLINE_CHARS - 1).lastIndexOf(" ");
+  return `${head.slice(0, word > 0 ? word : HEADLINE_CHARS - 1).trimEnd()}…`;
 }
 
 /** The source a model's citation names: its id, or a source whose id the citation holds ("session 2acbc1a3"). */

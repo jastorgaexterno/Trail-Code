@@ -138,3 +138,11 @@ test("TRAIL_NO_FETCH turns the session read off", () => {
   mkdirSync(join(repo, ".git"), { recursive: true });
   assert.equal(beginSessionRead(repo, { ...process.env, TRAIL_NO_FETCH: "1" }), null);
 });
+
+test("with no past sessions here, the session read doesn't start, so init says nothing about it", () => {
+  const home = mkdtempSync(join(tmpdir(), "sess-none-"));
+  mkdirSync(join(home, ".claude", "projects"), { recursive: true });
+  const repo = tmpRepo("sess-none");
+  spawnSync("git", ["init", "-q"], { cwd: repo });
+  assert.equal(beginSessionRead(repo, { ...process.env, HOME: home, TRAIL_HOME: join(home, ".trail") }), null);
+});

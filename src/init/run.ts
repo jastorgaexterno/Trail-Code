@@ -236,7 +236,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
     : Promise.resolve({ names: {}, model: 'none', why: null, sentItems: 0, tokens: 0 });
   let reviewResult: ReviewResult | null = null;
   if (reads.reviews) {
-    if (!reads.reviews.done) say('· still reading PR reviews…');
+    if (!reads.reviews.done) say('· still reading pull requests…');
     reviewResult = await reads.reviews.result.catch(() => null);
   }
   let sessionResult: SessionResult | null = null;

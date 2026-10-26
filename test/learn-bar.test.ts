@@ -60,3 +60,17 @@ test("sameLearning matches a reworded headline", () => {
   assert.equal(sameLearning("Sign-up comes first, before any onboarding screen", "Sign-up always comes first before onboarding"), true);
   assert.equal(sameLearning("Sign-up comes first, before any onboarding screen", "Every AI call must name a user and tags"), false);
 });
+
+test("a long headline ends at its last clause break, or at a whole word, never mid-word", () => {
+  assert.equal(
+    plainHeadline("Custom path function is not allowed with non-strict trailing-slash mode; blocked in types, not fixed at runtime"),
+    "Custom path function is not allowed with non-strict trailing-slash mode",
+  );
+  assert.equal(
+    plainHeadline("Error and not-found handling now uses normal middleware routing in v5, replacing the old two-argument form entirely"),
+    "Error and not-found handling now uses normal middleware routing in v5",
+  );
+  const words = plainHeadline("word ".repeat(40));
+  assert.ok(words.length <= 100 && /^(word )+word…$/.test(words), words);
+  assert.equal(plainHeadline("Adapters move out of core into separate packages in v5, so new runtime adapters ship standalone"), "Adapters move out of core into separate packages in v5, so new runtime adapters ship standalone");
+});
