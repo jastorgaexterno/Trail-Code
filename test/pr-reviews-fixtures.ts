@@ -5,11 +5,25 @@ export const bot = { login: "coderabbitai", __typename: "Bot" };
 
 export const HUNK = "@@ -10,6 +10,8 @@ export async function orders(req) {\n   const rows = await db.query(sql);\n+  // TODO\n   return rows;";
 
-/** GitHub's GraphQL answer for four merged PRs, one reviewed only by a bot. */
+/** GitHub's GraphQL answer for four merged PRs (one reviewed only by a bot) and one closed without merging. */
 export const GITHUB = {
   data: {
     repository: {
-      pullRequests: {
+      closed: {
+        nodes: [
+          {
+            number: 36,
+            title: "Sessions in Redis",
+            body: "Moves sessions to Redis so restarts keep people signed in, as discussed in the sessions thread last week.",
+            closedAt: "2026-10-08T09:00:00Z",
+            author: { login: "erin" },
+            comments: { nodes: [{ body: "Closing: we decided to keep sessions in Postgres, one less thing to run.", author: human("alice") }] },
+            reviews: { nodes: [] },
+            reviewThreads: { nodes: [] },
+          },
+        ],
+      },
+      merged: {
         nodes: [
           {
             number: 38,

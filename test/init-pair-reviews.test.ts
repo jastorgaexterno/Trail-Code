@@ -1,7 +1,7 @@
 /**
  * `trail init --pair CODE` run by a coding agent: the person asked for Trail on
  * its page, so this run reads the repo's merged PR reviews like the person's own
- * terminal does, and what reviewers made authors change reaches the page as
+ * terminal does, and what the PRs show the team decided reaches the page as
  * found learnings. Without `--pair`, an agent's init still starts no `claude`.
  */
 import { test } from "node:test";
@@ -41,11 +41,13 @@ function fakeTools(): { bin: string; log: string } {
   const reviews = {
     findings: [
       {
-        title: "Return a 500 when db.query fails in src/api",
-        body: "## Decided\n- Handlers in `src/api/` log the db.query error and return a 500.",
+        headline: "API handlers report database failures instead of hiding them",
+        why: "Reviewers kept catching handlers that swallowed a failed query.",
+        for_agent: "Handlers in `src/api/` log the db.query error and return a 500.",
+        kind: "decided",
         evidence: [
-          { pr: 41, quote: "swallows the error from db.query" },
-          { pr: 38, quote: "must return a 500 when db.query fails" },
+          { source: "#41", quote: "swallows the error from db.query" },
+          { source: "#38", quote: "must return a 500 when db.query fails" },
         ],
       },
     ],
@@ -58,7 +60,7 @@ if (process.argv.includes("--version")) { console.log("9.9.9"); process.exit(0);
 let input = "";
 process.stdin.on("data", (b) => (input += b));
 process.stdin.on("end", () => {
-  const review = input.startsWith("Inline review comments");
+  const review = input.startsWith("This repository's recent pull requests");
   fs.writeFileSync(${JSON.stringify(log)} + (review ? "/reviews.txt" : "/other.txt"), input);
   console.log(JSON.stringify({ is_error: false, total_cost_usd: 0.01, structured_output: review ? ${JSON.stringify(reviews)} : { findings: [] } }));
 });
@@ -146,7 +148,7 @@ test("an agent's init --pair reads the merged PRs' reviews and hands what review
 
     const progress = trail.progress();
     const found = progress.flatMap((p) => (p.found as Found[] | undefined) ?? []);
-    assert.deepEqual(found.filter((f) => f.kind === "decision").map((f) => f.title), ["Return a 500 when db.query fails in src/api"], JSON.stringify(progress));
+    assert.deepEqual(found.filter((f) => f.kind === "decision").map((f) => f.title), ["API handlers report database failures instead of hiding them"], JSON.stringify(progress));
     const prs = progress.map((p) => (p.phases as PhaseRow[] | undefined)?.find((ph) => ph.id === "prs")).filter(Boolean).at(-1);
     assert.equal(prs?.status, "done");
     assert.equal(prs?.count, "4 PRs", "the merged PRs it read");
@@ -188,7 +190,7 @@ for (const [how, entry] of [["graft", join("src", "bin", "graft.ts")], ["no name
       assert.equal(code, 0, err);
       assert.ok(existsSync(join(repo, ".trail", "hook.cjs")), `wired as Trail\n${err}`);
       const found = trail.progress().flatMap((p) => (p.found as Found[] | undefined) ?? []);
-      assert.deepEqual(found.filter((f) => f.kind === "decision").map((f) => f.title), ["Return a 500 when db.query fails in src/api"], err);
+      assert.deepEqual(found.filter((f) => f.kind === "decision").map((f) => f.title), ["API handlers report database failures instead of hiding them"], err);
       // This machine has no `trail` command (PATH holds only the stand-ins and git): say how to get it.
       assert.match(err, /the trail command isn't installed here · npm install -g @trailhq\/trail-code/);
     } finally {

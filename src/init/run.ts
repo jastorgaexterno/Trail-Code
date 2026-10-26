@@ -93,7 +93,7 @@ export function beginLookBack(repo: string, opts: { env?: NodeJS.ProcessEnv; pla
   // asked for Trail on its page (`--pair`), whoever runs init. An agent's read ends inside its tool call's limit.
   const reviews = model || (opts.pair === true && !plain);
   reads.reviews = reviews ? beginReviewRead(repo, env, 'gh', agent ? AGENT_CAP_MS : undefined) : null;
-  if (reads.reviews) lines.push("· reading review comments on this repo's merged PRs for what reviewers keep flagging");
+  if (reads.reviews) lines.push("· reading this repo's pull requests for what the team decided and ruled out");
   return { reads, lines };
 }
 

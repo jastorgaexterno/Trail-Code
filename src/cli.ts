@@ -1659,7 +1659,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     if (pair) {
       if (lookBack?.reads.lb) pair.phase("decisions", "running", "", "Reading past Claude sessions");
       else pair.phase("decisions", "done", "skipped");
-      if (lookBack?.reads.reviews) pair.phase("prs", "running", "", "Reading review comments on merged PRs");
+      if (lookBack?.reads.reviews) pair.phase("prs", "running", "", "Reading pull requests");
       else pair.phase("prs", "done", "skipped");
     }
 
@@ -1761,10 +1761,13 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       const { fromReviews, fromMemory } = learned.teamKept ?? { fromReviews: null, fromMemory: null };
       if (fromReviews?.saved.length) {
         const n = fromReviews.saved.length;
-        const what = n < fromReviews.offered ? `kept ${n} of the ${fromReviews.offered} things` : `learned ${n} thing${n === 1 ? "" : "s"}`;
-        console.error(`✓ ${what} reviewers made authors change, from the last ${fromReviews.result.prs} merged PRs here`);
+        const what = n < fromReviews.offered ? `kept ${n} of the ${fromReviews.offered} learnings` : `${n} learning${n === 1 ? "" : "s"}`;
+        console.error(`✓ ${what} from this repo's pull requests`);
         // saveReviewFindings keeps the findings' order.
-        fromReviews.saved.forEach((note, i) => console.error(`    for your team · from review on ${(fromReviews.kept[i]?.prs ?? []).map((n) => `#${n}`).join(", ")}: ${note.title}`));
+        fromReviews.saved.forEach((note, i) => {
+          const prs = fromReviews.kept[i]?.prs ?? [];
+          console.error(`    for your team · ${note.title}${prs.length ? ` (${prs.map((n) => `#${n}`).join(", ")})` : ""}`);
+        });
       }
       if (fromMemory?.saved.length) {
         console.error(`✓ kept ${fromMemory.saved.length} of the ${fromMemory.offered} notes your Claude keeps about this repo`);
@@ -1775,7 +1778,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       const prs = learned.read?.prs;
       if (pair && prs !== undefined && prs !== null) {
         const n = fromReviews?.saved.length ?? 0;
-        pair.phase("prs", "done", `${prs} PRs`, `Read ${prs} merged PRs: ${n} thing${n === 1 ? "" : "s"} reviewers made authors change`);
+        pair.phase("prs", "done", `${prs} PRs`, `Read ${prs} merged PRs: ${n} learning${n === 1 ? "" : "s"}`);
       }
       // The team learnings kept with no screen, said in no past session; after a screen the page lists the repo's own.
       const notes = [...(fromReviews?.saved ?? []), ...(fromMemory?.saved ?? [])].map((note) => ({ note, sessions: 0 }));
