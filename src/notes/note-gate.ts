@@ -138,7 +138,7 @@ export function gateNote(input: GateInput, existing: Note[]): GateResult {
 
   for (const line of text.split(/\r?\n/)) {
     if (STATUS.some((re) => re.test(line))) {
-      problems.push(`"${clip(line)}" is status: true today, wrong next week. Keep what stays true (the cause, the rule, the why) and put status in the PR.`);
+      problems.push(`"${clip(line)}" is status: true today, wrong next week. Keep what stays true (the cause, the choice, the why) and put status in the PR.`);
       break;
     }
   }
