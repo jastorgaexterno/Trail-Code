@@ -22,6 +22,8 @@ import { VALUE_COPY } from "../src/skills/value-line.js";
 import { LESSON_DENY } from "../src/skills/lesson-gate.js";
 import { standingDirective } from "../src/claude/format.js";
 import { formatNoteHits, parseNote, type Note } from "../src/notes/notes.js";
+import { noteAsk } from "../src/claude/note-signals.js";
+import { gateNote } from "../src/notes/note-gate.js";
 import { homeEnv, tmpRepo } from "./helpers.js";
 
 process.env.TRAIL_HOME = mkdtempSync(join(tmpdir(), "units-trail-home-"));
@@ -113,26 +115,59 @@ function repo(): string {
 
 const CENTS = "## Decided\n- Store money in integer cents in `addCents`, because floats drift on sums.\n";
 
-test("trail note --always-follow writes kind guardrail, standing, and says always follow; without it, no kind as before", () => {
+/** A Claude Code transcript for `repo` in `home`, with these lines typed by the person. */
+function transcript(home: string, repo: string, typed: string[]): void {
+  const dir = join(home, ".claude", "projects", repo.replace(/[^A-Za-z0-9]/g, "-"));
+  mkdirSync(dir, { recursive: true });
+  const at = new Date().toISOString();
+  const lines = typed.map((t, i) => JSON.stringify({ type: "user", uuid: `u${i}`, timestamp: at, message: { role: "user", content: t } }));
+  writeFileSync(join(dir, "s1.jsonl"), `${lines.join("\n")}\n`);
+}
+
+test("trail note --always-follow from an agent is marked only when the person's own words this session back it", () => {
   const home = mkdtempSync(join(tmpdir(), "units-home-"));
   const d = repo();
-  const marked = run(["note", d, "--title", "Store money in integer cents", "--touches", "src/money.ts", "--always-follow"], home, CENTS);
+  const dir = join(d, ".trail", "learnings");
+
+  // Nothing the person typed says so: saved as a plain learning, and the agent is told why.
+  const unbacked = run(["note", d, "--title", "Store money in integer cents", "--touches", "src/money.ts", "--always-follow"], home, CENTS);
+  assert.equal(unbacked.status, 0, unbacked.err);
+  assert.match(unbacked.out, /^✓ added to this repo · /m);
+  assert.match(unbacked.out, /^· not marked always follow: nothing the person typed this session says it must always hold/m);
+  const [first] = readdirSync(dir);
+  const plainText = readFileSync(join(dir, first!), "utf8");
+  assert.doesNotMatch(plainText, /^kind:/m);
+  assert.doesNotMatch(plainText, /^standing:/m);
+
+  // The person said it, in this session: marked.
+  transcript(home, d, ["fix the totals", "always store money in integer cents, even if someone asks for floats later"]);
+  const marked = run(["note", d, "--title", "Money is integer cents in addCents", "--touches", "src/money.ts", "--always-follow", "--anyway"], home, CENTS);
   assert.equal(marked.status, 0, marked.err);
   assert.match(marked.out, /^✓ added to this repo, always follow · \.trail\/learnings\/.+\.md$/m);
-  const dir = join(d, ".trail", "learnings");
-  const [file] = readdirSync(dir);
-  const text = readFileSync(join(dir, file!), "utf8");
+  const second = readdirSync(dir).find((f) => f !== first)!;
+  const text = readFileSync(join(dir, second), "utf8");
   assert.match(text, /^kind: "?guardrail"?$/m, text);
   assert.match(text, /^standing: true$/m, text);
-  const n = parseNote(text, join(dir, file!));
-  assert.equal(n?.kind, "guardrail");
-  assert.equal(isAlwaysFollow(n!), true);
+  assert.equal(isAlwaysFollow(parseNote(text, join(dir, second))!), true);
+});
 
+test("the agent's save asks say learnings, never rules", () => {
+  for (const kind of ["fixed", "corrected", "undone", "chose", "explored", "other"] as const)
+    assert.doesNotMatch(noteAsk({ kind, key: "k", what: "x." } as never), /\brules?\b/i, kind);
+  const status = gateNote({ title: "t", body: "## Decided\n- PR #3 is open and not merged yet.", personal: false, files: ["a.ts"], namesSymbol: false, touches: ["a.ts"] }, []);
+  assert.ok(status.problems.length > 0);
+  for (const p of status.problems) assert.doesNotMatch(p, /\brules?\b/i, p);
+});
+
+test("trail note without --always-follow writes no kind, as before", () => {
+  const home = mkdtempSync(join(tmpdir(), "units-home-"));
+  const d = repo();
+  const dir = join(d, ".trail", "learnings");
   const plain = run(["note", d, "--title", "Sum cents with addCents only", "--touches", "src/money.ts"], home, "## Decided\n- Sum money with `addCents` only, because it keeps cents whole.\n");
   assert.equal(plain.status, 0, plain.err);
   assert.match(plain.out, /^✓ added to this repo · /m);
-  const other = readdirSync(dir).find((f) => f !== file)!;
-  const second = readFileSync(join(dir, other), "utf8");
-  assert.doesNotMatch(second, /^kind:/m, "a plain learning is written as before");
-  assert.doesNotMatch(second, /^standing:/m);
+  const [file] = readdirSync(dir);
+  const text = readFileSync(join(dir, file!), "utf8");
+  assert.doesNotMatch(text, /^kind:/m, "a plain learning is written as before");
+  assert.doesNotMatch(text, /^standing:/m);
 });

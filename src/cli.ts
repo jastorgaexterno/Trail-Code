@@ -91,6 +91,7 @@ import { checkLocally } from "./check/local-check.js";
 import { findLearning, learningFileName, liveLearnings } from "./notes/learning-fields.js";
 import { savedIdLine } from "./notes/replace.js";
 import { ALWAYS_FOLLOW, isAlwaysFollow } from "./notes/units.js";
+import { alwaysFollowBacked } from "./notes/always-follow-gate.js";
 import { formatOverlap, maybeRefreshBranches, overlapsWith, pushedWhen, readBranchCache, refreshBranches } from "./notes/branches.js";
 import { ensureRepoTrail, LEARNINGS_DIR } from "./notes/repo-trail.js";
 import type { AskResult } from "./ask/ask.js";
@@ -1325,14 +1326,15 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   }
   const author = opts.author?.trim() || noteAuthor(repo);
   const date = new Date().toISOString().slice(0, 10);
+  const always = opts.alwaysFollow ? alwaysFollowBacked(repo, opts.title) : { ok: false as const };
   // Saved by `trail note`, which is how an agent saves: src says so, and no flag changes it.
   const earlier: Note[] = [];
   const saved: Note[] = [];
   for (const t of targets) {
     earlier.push(...listNotes(t.dir));
     // Always follow is a mark on the learning: written as kind guardrail (what older files and the cloud read), and
-    // standing, so every session starts with it.
-    const mark = opts.alwaysFollow ? { kind: "guardrail" as const, standing: true } : {};
+    // standing, so every session starts with it. Only on the person's word (always-follow-gate.ts).
+    const mark = always.ok ? { kind: "guardrail" as const, standing: true } : {};
     saved.push(writeNote(t.dir, { title: opts.title, body, author, date, branch: currentBranch(t.dir), cost, touches: t.touches, replaces, src: "agent", ...mark }, scope));
   }
   const touches = targets.flatMap((t) => t.touches);
@@ -1348,6 +1350,10 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   }
   for (const n of saved) console.log(`✓ ${n.scope === "personal" ? "saved just for you" : "added to this repo"}${isAlwaysFollow(n) ? `, ${ALWAYS_FOLLOW}` : ""} · ${notePlace(n)}`);
   console.log(savedIdLine(saved));
+  if (opts.alwaysFollow && !always.ok)
+    console.log(
+      `· not marked always follow: nothing the person typed this session says it must always hold. Saved as a learning; if they want it always followed, ask them, then save it again with --replaces ${saved[0]!.id} --always-follow`,
+    );
   const note = saved[0]!;
   // Name a code file if the note touches one; docs are rarely what it's about.
   const about = touches.find((t) => !/\.(md|mdx|txt)$/i.test(t.split("#")[0]!)) ?? touches[0];
