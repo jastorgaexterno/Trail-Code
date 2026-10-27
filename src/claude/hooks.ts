@@ -155,8 +155,10 @@ function graftJson(dir: string, args: string[], timeout: number = CHILD_TIMEOUT_
     // script and observe the exact args it was invoked with, instead of shelling
     // out to the real CLI (which isn't built relative to the TS source under test).
     const cliPath = process.env.GRAFT_TEST_CLI ?? graftCliPath();
+    // A repo on trail with no map yet: the child starts its first build and answers
+    // at once, since the wait it would otherwise do (graph/refresh.ts) outlasts the hook.
     const out = execFileSync(process.execPath, [cliPath, ...args],
-      { cwd: dir, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+      { cwd: dir, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env: { ...process.env, GRAFT_FIRST_BUILD_WAIT_MS: '0' } });
     return JSON.parse(out);
   } catch (e: any) {
     // `graft check` exits non-zero when the graph is stale (by design) but still
