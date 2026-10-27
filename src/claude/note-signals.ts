@@ -63,8 +63,16 @@ const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
  */
 const BASH_WRITE =
   /\bsed\s+(?:-[a-zA-Z]+\s+)*-i|\bperl\s+-[a-z]*i|\btee\s|(?:^|[^>&0-9])>>?\s*[\w./~-]+\.\w+|\bgit\s+apply\b|\bapply_patch\b|\bopen\([^)]*,\s*['"][wa]|\.write_text\(|\bwriteFileSync\(/m;
-/** File names in a command, by their extension. */
-const FILE_WORD = /[\w./-]+\.(?:go|tsx?|jsx?|mjs|cjs|py|rb|rs|java|kt|swift|cs|php|c|h|cc|cpp|hpp|scala|sql|ya?ml|json|toml|sh|css|scss|vue|svelte)\b/g;
+const CODE_EXT = '(?:go|tsx?|jsx?|mjs|cjs|py|rb|rs|java|kt|swift|cs|php|c|h|cc|cpp|hpp|scala|sql|ya?ml|json|toml|sh|css|scss|vue|svelte)';
+/**
+ * File names in a command, by their extension. On Windows a path also has a drive and backslashes
+ * (`C:\Users\me\shop\src\client.ts`, or `C:/Users/...` in Git Bash): without them only `client.ts`, or a
+ * path on the wrong drive, would be read.
+ */
+export function fileWordRe(platform: NodeJS.Platform = process.platform): RegExp {
+  return platform === 'win32' ? new RegExp(`(?:\\b[A-Za-z]:)?[\\w./\\\\~-]+\\.${CODE_EXT}\\b`, 'g') : new RegExp(`[\\w./-]+\\.${CODE_EXT}\\b`, 'g');
+}
+const FILE_WORD = fileWordRe();
 /** `cd <dir> &&` at the start of a command: where its relative paths start. */
 const LEADING_CD = /^\s*cd\s+(["']?)([^"'&;|]+?)\1\s*(?:&&|;)/;
 
@@ -252,7 +260,10 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
     if (!edits.length) continue;
     const times = fails.length === 1 ? 'once' : `${fails.length} times`;
     const file = [...edits].reverse().find((f) => f !== '');
-    out.push({ kind: 'fixed', key: `fixed:${pass.t.uuid}`, what: `${pass.name} failed ${times}, then passed after your change${file ? ` to ${file}` : ''}.` });
+    // Keyed on the episode, the first pass after the last failure: a rerun that passes again is the same sign.
+    const lastFail = fails[fails.length - 1]!.t.at;
+    const first = checks.slice(0, i).find((c) => !c.failed && c.name === pass.name && c.t.at > lastFail) ?? pass;
+    out.push({ kind: 'fixed', key: `fixed:${first.t.uuid}`, what: `${pass.name} failed ${times}, then passed after your change${file ? ` to ${file}` : ''}.` });
     break;
   }
 
@@ -325,23 +336,23 @@ export function noteSignals(jsonl: string, repo: string): NoteSignal[] {
   return out;
 }
 
-const SAVE = '`trail note --title "<the fact, not the task>"`';
-const CLOSE = 'Sections: ## Decided, ## Tried and ruled out, ## Watch out. A summary, never a transcript, nothing secret. Then finish as trail\'s output asks.';
+const SAVE = '`trail note --title "<the decision in plain words a teammate understands, no file names>"`';
+const CLOSE = 'Put files, commands and values in the body under "In the code:". Sections: ## Decided, ## Tried and ruled out, ## Watch out. A summary, never a transcript, nothing secret. Then finish as trail\'s output asks.';
 
 /** What the agent is told: the sign first, since Claude Code folds long hook output to its first lines. */
 export function noteAsk(s: NoteSignal): string {
   const skip = 'Nothing worth keeping? Say so and stop.';
   const first =
     s.kind === 'fixed'
-      ? `${s.what} If the cause isn't obvious from the diff, save it: ${SAVE}, naming the file and the why. ${skip}`
+      ? `${s.what} If the cause isn't obvious from the diff, save it: ${SAVE}, with the why. ${skip}`
       : s.kind === 'corrected'
-        ? `${s.what} Save the rule so nobody has to say it again: ${SAVE}, naming the file it's about; add --personal if it's about how this person likes to work. ${skip}`
+        ? `${s.what} Save it as a learning so nobody has to say it again: ${SAVE}; add --personal if it's about how this person likes to work. ${skip}`
         : s.kind === 'undone'
-          ? `${s.what} If you dropped an approach, save why under ## Tried and ruled out: ${SAVE}, naming the file. ${skip}`
+          ? `${s.what} If you dropped an approach, save why under ## Tried and ruled out: ${SAVE}. ${skip}`
           : s.kind === 'chose'
             ? `${s.what} If the choice matters to the next person, save it under ## Decided, with the options you dropped and why under ## Tried and ruled out: ${SAVE}. ${skip}`
             : s.kind === 'explored'
-              ? `${s.what} If it found where something lives or why it works the way it does, and the code won't say so plainly, save it: ${SAVE}, naming the files. ${skip}`
-              : `${s.what} If the session found what the diff won't tell the next person (a cause, a dropped approach, a rule), save it now so it ships with the change: ${SAVE}. ${skip}`;
+              ? `${s.what} If it found where something lives or why it works the way it does, and the code won't say so plainly, save it: ${SAVE}. ${skip}`
+              : `${s.what} If the session found what the diff won't tell the next person (a cause, a dropped approach, how something is done here), save it now so it ships with the change: ${SAVE}. ${skip}`;
   return `[trail] ${first}\n${CLOSE}`;
 }

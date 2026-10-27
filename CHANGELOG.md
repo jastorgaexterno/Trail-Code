@@ -1,5 +1,190 @@
 # Changelog
 
+## 0.26.0
+
+### Added
+
+- **One setup for every agent.** `trail init --agents auto` sets Trail up
+  without asking. It writes the repo files for Claude Code, Cursor, Codex and
+  OpenCode, so a teammate on one of them is covered once you commit, and this
+  laptop's settings only for the agents installed here, plus the one running
+  it. The Trail page now gives everyone the same setup prompt and says which
+  agents were set up.
+- **The first setup finds what reviewers flagged.** When a coding agent runs
+  the setup prompt from Trail's page, Trail now reads the repo's merged PR
+  reviews too, so the page shows real learnings on the first run instead of
+  none.
+- **Claude Code gets the workspace connector.** Once a laptop is paired,
+  `trail mcp` passes the workspace's tools, skill prompts and instructions
+  through to Claude Code, the same ones Claude.ai gets. No second sign-in.
+  Your repo's own tools still win on a name clash, and if Trail can't be
+  reached the repo tools keep working.
+- **Always follow.** `trail note --always-follow` marks a learning your agent
+  holds to even when asked otherwise. It says which learning it is and who
+  added it. An agent can only set it when you said so in this session.
+
+### Changed
+
+- Everything you read says **learnings, always follow and skills**. Files on
+  disk are unchanged.
+- The old brain tools that went through `/api/v1/mcp` are gone; the workspace
+  connector replaces them.
+
+### Fixed
+
+- The setup prompt runs as Trail even when it's started as `graft`, which an
+  agent does when installing `@trailhq/trail-code` fails. It used to skip
+  everything Trail does. If the `trail` command is missing, setup says how to
+  install it.
+- A repo skill's description reaches the onboarding review, so it no longer
+  shows "No description yet" on Trail.
+- A setup that stops never leaves Trail's page waiting. Run from the home
+  folder, in a folder that isn't a git repo, with an agent list it doesn't
+  know, or stopped part way, `trail init --pair` tells the page why and how to
+  fix it. It no longer sets up a folder that isn't a git repo.
+- A setup that can't reach Trail stops before changing anything and says to
+  run it again with network access. Codex runs commands with the network off
+  unless asked.
+- A laptop whose person connects late (a join approved after an hour, the
+  page reopened, the laptop restarted) is connected by the next `trail`
+  command, which says so once.
+- A broken pairing file no longer crashes `trail mcp`; the repo is treated as
+  not paired.
+- `TRAIL_MCP_URL` is only used for the paired Trail or a local server, so the
+  laptop's token is never sent anywhere else.
+
+## 0.25.0
+
+### Added
+
+- **Skills, on by default.** When you do the same job on a few different days
+  (a release, a deploy, test and lint before a commit), Trail offers once to
+  save it as a skill. It saves only when you type yes. The next time you ask
+  for that job, your agent gets the exact steps you used. A step that can't be
+  undone, like a push to prod, asks you first.
+- **Lessons on a skill.** When you correct a run ("you skipped lint"), Trail
+  offers to add that to the skill, so the next run does it.
+- **Guardrails.** A command you've said never to run is stopped before it runs.
+- **`trail init` looks back** through your own past sessions in the repo, finds
+  what came up on two or more days (preferences, guardrails, repeated jobs) and
+  lists them for you to keep. Nothing is kept unless you pick it. No model call.
+- **Known error fixes.** When a command fails the way it failed before, your
+  agent gets the fix that worked last time.
+- **One install, all your repos.** After `trail init --pair` connects the
+  first repo, the Trail page lists the other repos Claude Code ran in on this
+  laptop (names only, never paths). Tick the ones you want and each is set up
+  and added to your workspace.
+- **Skills go up as folders.** A repo skill reaches Trail with the files it
+  points to (references, scripts, templates), not just its steps.
+- **Skill runs from your coding agent.** When Claude Code uses one of the
+  repo's skills (on its own, or because you typed `/name`), the Skills page
+  counts it as a run. Only the skill's name is sent, never the task.
+- The token card on the Trail page measures your last merged PR, not one
+  lookup.
+
+### Changed
+
+- Learnings and skills don't repeat each other. Each hook gives your agent one
+  answer, and at the end of a turn the skill offer comes before the ask to save
+  a learning.
+- `trail init --pair` lists the skills init found on the Trail page by name and
+  day count, marked as kept on this machine. Their steps stay on your machine.
+- `--server <url>` is the only way to point Trail at a self-hosted server;
+  `TRAIL_URL` is no longer read.
+- Uploads send only learnings committed at HEAD, and only the current repo.
+- A learning or skill deleted at HEAD comes down from Trail at the next sync.
+  Switching branches never takes anything down.
+- Learnings, skill runs and searches sync at the end of each turn, not only
+  when a session starts.
+
+### Fixed
+
+- Python test runs count as tests: `.venv/bin/pytest`, `uv run`, `poetry run`,
+  `tox`, `nox` and `python -m unittest`.
+- The ask to save a learning comes once per fail-then-pass, not again on every
+  rerun.
+- A long preference is kept whole; only its title is shortened.
+- Codex users are always told to trust Trail's hooks in `/hooks`.
+- Windows: sessions in a git worktree are found as the repo's, and paths in
+  shell edits, skill steps and the `cp` line read correctly.
+- `trail grep` refuses a pattern whose repeat repeats inside it, like `(a+)+`,
+  which could hang the search on one long line.
+- Windows: a skill update no longer fails while another process lets go of
+  the skills lock.
+
+## 0.24.1
+
+### Added
+
+- **`trail init --pair <code>`**: set up from the Trail web app at
+  team.trailhq.com. The setup prompt there carries a pair code; with it, init
+  streams its steps (map, PR reviews, past sessions, learnings) to the live
+  onboarding page, which shows the tokens one lookup on the map saved and
+  teammates' open branches that touch your files, then hands the repo's
+  learnings and skills over for you to review before anything is uploaded.
+  A learning you drop there stays dropped.
+- **`trail init --connect <code>`**: connects this machine to your Trail
+  workspace with the one-time code from team.trailhq.com (the token goes where
+  `trail login` keeps it) and sends one summary of the repo: what a lookup on
+  the code map saved, the learnings' titles, and teammates' recently pushed
+  branches that change the files you work on. Titles, counts and names only;
+  never code, diffs or session text.
+- **`--server <url>`** (or `TRAIL_URL`) points `--pair` and `--connect` at a
+  self-hosted Trail. Offline, init says so once and prints the exact command
+  to connect later.
+- **Workspace brains in your agents**: once connected, `trail mcp` also serves
+  the workspace's `list_brains`, `get_context`, `search_rules` and `get_rules`,
+  passed to the workspace with your token; the repo tools keep working
+  offline. Claude Code gets one user-level `trail` entry that serves just
+  those (`trail mcp --brains`); `trail logout` takes it out.
+- `trail init` writes a skill when your past sessions repeat a procedure.
+
+### Changed
+
+- Trail cloud now defaults to https://team.trailhq.com.
+
+### Fixed
+
+- The agent picker no longer leaves a stray title behind in an 80-column
+  terminal.
+
+## 0.24.0
+
+### Added
+
+- **`trail init` offers what your teammates' Claude doesn't know yet** (#662):
+  what reviewers flagged on merged PRs, and Claude Code's memory of the repo.
+  Every team row names real code, and anything CLAUDE.md, AGENTS.md or a
+  learning already says is dropped. What you told Claude more than once is now
+  offered as personal only.
+- **Learnings are asked for on real signals** (#663): a check that failed, then
+  passed after an edit; a correction followed by code work; a commit, push or
+  PR after edits; a long read that found where something lives. The ask names
+  what happened.
+- **`trail note` checks a team learning before saving it**: it must name a file
+  or function in the repo, give a reason, and not repeat an existing learning.
+  `--replaces <file>` supersedes an old one, and `--anyway` skips the checks.
+- **Shell parsing and command risk checks** behind trail's hooks, and new
+  learning fields (#654).
+- **Gleam support** (#408).
+
+### Fixed
+
+- Language servers are found and started on Windows (#579), and child
+  processes no longer flash console windows there (#631).
+- Update checks honor `DO_NOT_TRACK` (#651).
+- `--no-gitignore` is kept when build options are saved (#413), and `/graft/`
+  isn't added to `.gitignore` when git already ignores the folder (#622).
+- Unchanged cards aren't rewritten on every build (#472).
+- Background task notifications no longer trigger retrieval in the prompt hook
+  (#551).
+- Deep builds: stringified concept-pass nodes are read, empty batches don't
+  tick (#395), and concept batches run in parallel (#521).
+- LLM providers: a 200 carrying an error is retried, a forced `tool_choice`
+  that isn't honoured falls back (#502), and structured message content from
+  OpenAI-compatible providers is read (#479).
+- The viewer keeps the selection after a pan (#630).
+
 ## 0.23.1
 
 ### Fixed

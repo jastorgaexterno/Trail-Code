@@ -39,6 +39,17 @@ export function setBrand(b: Brand, env: NodeJS.ProcessEnv = process.env): void {
   env[BRAND_ENV] = b;
 }
 
+/**
+ * `init --pair CODE` is Trail's setup prompt: only Trail's page hands out a pair
+ * code, so the person asked for Trail, whatever name ran it. An agent whose
+ * install of @trailhq/trail-code failed swaps in the `graft` already on the
+ * machine, and an old shim loads dist/cli.js with no name; under graft either
+ * would skip the look-back and `.trail/` while the page waits for them.
+ */
+export function asksForTrail(argv: readonly string[]): boolean {
+  return argv.includes("init") && argv.some((a) => a === "--pair" || a.startsWith("--pair="));
+}
+
 /** `[trail]` or `[graft]`: the prefix agents and the statusline look for. */
 export function tag(env: NodeJS.ProcessEnv = process.env): string {
   return `[${brand(env)}]`;
@@ -263,7 +274,7 @@ export function trailHandoverLine(input: { env?: NodeJS.ProcessEnv; home?: strin
     /* shown again next time */
   }
   return (
-    "· graft is now Trail-code: the same code map under the `trail` command, plus learnings the team shares in .trail/. " +
+    "· graft is now Trail-code: the same code map under the `trail` command, plus learnings everyone working in the repo shares in .trail/. " +
     "Tell the user once, in a line at the end of your first reply, that `graft upgrade` adds it and graft keeps working."
   );
 }

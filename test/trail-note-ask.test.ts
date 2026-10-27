@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BRAND_ENV } from '../src/brand.js';
 import { main } from '../src/claude/hooks.js';
-import { noteAsk, noteSignals } from '../src/claude/note-signals.js';
+import { fileWordRe, noteAsk, noteSignals } from '../src/claude/note-signals.js';
 import { ensureRepoHome } from '../src/notes/home.js';
 
 let n = 0;
@@ -37,7 +37,7 @@ test('a check that failed, then passed after an edit to the code, is a sign', ()
   const [s] = noteSignals(fixed, REPO);
   assert.equal(s?.kind, 'fixed');
   assert.equal(s?.what, 'npm test failed once, then passed after your change to src/retry.ts.');
-  assert.match(noteAsk(s!), /^\[trail\] npm test failed once, then passed after your change to src\/retry\.ts\. If the cause isn't obvious from the diff, save it: `trail note --title "<the fact, not the task>"`, naming the file and the why\. Nothing worth keeping\? Say so and stop\.\n/);
+  assert.match(noteAsk(s!), /^\[trail\] npm test failed once, then passed after your change to src\/retry\.ts\. If the cause isn't obvious from the diff, save it: `trail note --title "<the decision in plain words a teammate understands, no file names>"`, with the why\. Nothing worth keeping\? Say so and stop\.\nPut files, commands and values in the body under "In the code:"\./);
 
   const thrice = jsonl(prompt('fix it'), bash('go test ./...', 'x', true), edit('a.go'), bash('go test ./pkg/...', 'x', true), bash('go test -run X ./...', 'x', true), edit('b.go'), bash('go test ./...', 'ok'));
   assert.match(noteSignals(thrice, REPO)[0]!.what, /^go test failed 3 times, then passed after your change to b\.go\.$/);
@@ -73,7 +73,7 @@ test('the person correcting the agent is a sign, when the agent goes on to chang
   const [s] = noteSignals(corrected, REPO);
   assert.equal(s?.kind, 'corrected');
   assert.equal(s?.what, 'The user corrected you ("no, use a channel instead, we never share memory here").');
-  assert.match(noteAsk(s!), /^\[trail\] The user corrected you \(.*\)\. Save the rule so nobody has to say it again/);
+  assert.match(noteAsk(s!), /^\[trail\] The user corrected you \(.*\)\. Save it as a learning so nobody has to say it again/);
 
   assert.deepEqual(kinds(jsonl(prompt("don't touch the db, add a cache"), edit('cache.go'))), [], "the session's first message can't correct anything");
   assert.deepEqual(kinds(jsonl(prompt('x'), say('done'), prompt('no, I mean the other file'), edit('b.go'))), [], 'a clarification');
@@ -135,7 +135,8 @@ test('a saved learning starts the signs over; one the gate turned away does not;
 async function stop(input: object): Promise<string> {
   let out = '';
   const write = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: string | Uint8Array) => ((out += String(chunk)), true)) as typeof process.stdout.write;
+  // Only the hook's strings: the test runner's own reports pass through, as the other hook tests do.
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => (typeof chunk === 'string' ? ((out += chunk), true) : (write as (...a: unknown[]) => boolean)(chunk, ...rest))) as typeof process.stdout.write;
   process.env.GRAFT_TEST_STDIN = JSON.stringify(input);
   try {
     await main('stop');
@@ -171,4 +172,32 @@ test('the Stop hook asks once per sign, three times a session at most, and never
   appendFileSync(t, '\n' + jsonl(bash('git commit -am wip')));
   assert.equal(await stop({ session_id: 's1', transcript_path: t }), '', 'three asks a session at most');
   assert.notEqual(await stop({ session_id: 's2', transcript_path: t }), '', 'a new session is asked again');
+});
+
+test('one fail then pass asks once: rerunning the passing check after the answer asks nothing more', async () => {
+  process.env.TRAIL_HOME = mkdtempSync(join(tmpdir(), 'note-ask-home-'));
+  process.env[BRAND_ENV] = 'trail';
+  const d = mkdtempSync(join(tmpdir(), 'note-ask-repo-'));
+  mkdirSync(join(d, 'graft', '.cache', 'session'), { recursive: true });
+  process.env.CLAUDE_PROJECT_DIR = d;
+  ensureRepoHome(d);
+  const t = join(d, 't.jsonl');
+  writeFileSync(t, jsonl(prompt('fix the retry bug'), bash('npm test', 'x', true), edit('src/a.ts', d), bash('npm test', 'ok')));
+  assert.match(JSON.parse(await stop({ session_id: 's3', transcript_path: t })).reason, /^\[trail\] npm test failed once/);
+  appendFileSync(t, '\n' + jsonl(say('Nothing worth keeping.')));
+  assert.equal(await stop({ session_id: 's3', transcript_path: t, stop_hook_active: true }), '');
+  for (const again of ['run the tests again', 'and once more']) {
+    appendFileSync(t, '\n' + jsonl(prompt(again), bash('npm test', 'ok'), say('All pass.')));
+    assert.equal(await stop({ session_id: 's3', transcript_path: t }), '', `${again}: the same fail and pass, already answered`);
+  }
+  // A new failure and fix is a new sign.
+  appendFileSync(t, '\n' + jsonl(prompt('now the timeout bug'), bash('npm test', 'x', true), edit('src/b.ts', d), bash('npm test', 'ok')));
+  assert.match(JSON.parse(await stop({ session_id: 's3', transcript_path: t })).reason, /^\[trail\] npm test failed/);
+});
+
+test("a shell edit's file is read whole on Windows too: the drive, backslashes, Git Bash's slashes, a short name", () => {
+  const cmd = "sed -i '' 's/4/6/' C:\\Users\\priya\\shop\\src\\client.ts && cat C:/Users/priya/shop/go.mod D:\\RUNNER~1\\shop\\main.go";
+  assert.deepEqual(cmd.match(fileWordRe('win32')), ['C:\\Users\\priya\\shop\\src\\client.ts', 'D:\\RUNNER~1\\shop\\main.go']);
+  assert.deepEqual("sed -i 's/4/6/' /work/app/src/client.ts".match(fileWordRe('linux')), ['/work/app/src/client.ts']);
+  assert.deepEqual("sed -i 's/4/6/' C:/work/app/src/client.ts".match(fileWordRe('win32')), ['C:/work/app/src/client.ts']);
 });

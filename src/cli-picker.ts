@@ -7,6 +7,7 @@
 import { relative, dirname, sep } from 'node:path';
 import type { HostPlan, PlannedWrite } from './hosts/plan.js';
 import { brand } from './brand.js';
+import { flatLine } from './notes/flatten.js';
 
 const indigo = (s: string) => `\x1b[38;2;84;111;255m${s}\x1b[0m`;
 const muted = (s: string) => `\x1b[38;5;244m${s}\x1b[0m`;
@@ -278,7 +279,7 @@ export function renderPicker(state: PickerState, tty = true, opts: { title?: str
   // rows carry the '(not detected)' tag or the cursor's colour codes.
   const label = (r: PickerRow) => `${r.label}${r.detected || r.kind === 'setting' ? '' : ' (not detected)'}`;
   const width = Math.max(...visible.filter((r) => r.kind === 'host').map((r) => label(r).length), 12);
-  const title = opts.title === undefined ? `${brand()} init — pick the agents your team uses:` : opts.title;
+  const title = opts.title === undefined ? `${brand()} init · pick the agents your team uses:` : opts.title;
   const lines = title ? [title, ''] : [];
   let ruled = false;
   const foldLine = () => {
@@ -352,18 +353,61 @@ export async function runPicker(
   return state ? { hosts: pickedHostIds(state), telemetry: pickedTelemetry(state) } : null;
 }
 
-/** Run a picker on the terminal until enter or esc: the final state, or null when cancelled. */
-async function drivePicker(initial: PickerState, title?: string | null): Promise<PickerState | null> {
-  let state = initial;
-  const out = process.stderr;
-  const stdin = process.stdin;
+/** Columns a character takes on a terminal: 2 for East Asian wide characters and emoji, else 1. */
+function charWidth(cp: number): number {
+  return (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe4f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff) ||
+    (cp >= 0x20000 && cp <= 0x3fffd)
+    ? 2
+    : 1;
+}
 
+/** How many columns `line` takes on screen: colour codes take none. */
+export function displayWidth(line: string): number {
+  let w = 0;
+  for (const ch of line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')) w += charWidth(ch.codePointAt(0)!);
+  return w;
+}
+
+/**
+ * How many terminal rows `text` (followed by a newline) takes at `columns`
+ * wide. A line longer than the terminal wraps onto more rows, and the redraw
+ * has to move up over all of them: counting lines instead left the top of the
+ * picker (its title) behind on every redraw in an 80-column terminal.
+ */
+export function renderedRows(text: string, columns: number): number {
+  const cols = columns > 0 ? columns : 80;
+  return text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(displayWidth(line) / cols)), 0);
+}
+
+/** The terminal a picker draws on and reads keys from; the real one unless a test hands in its own. */
+export interface PickerIO {
+  out: { write(s: string): unknown; columns?: number };
+  stdin: NodeJS.EventEmitter & { isRaw?: boolean; setRawMode?: (raw: boolean) => unknown; resume(): unknown; pause(): unknown };
+}
+
+/** Run a picker on the terminal until enter or esc: the final state, or null when cancelled. */
+export async function drivePicker(
+  initial: PickerState,
+  title?: string | null,
+  io: PickerIO = { out: process.stderr, stdin: process.stdin },
+): Promise<PickerState | null> {
+  let state = initial;
+  const { out, stdin } = io;
+
+  // Rows on screen, not lines: a line wider than the terminal wraps.
   let lastLines = 0;
   const draw = () => {
     if (lastLines > 0) out.write(`\x1b[${lastLines}A\x1b[0J`);
     const text = renderPicker(state, true, { title });
     out.write(`${text}\n`);
-    lastLines = text.split('\n').length;
+    lastLines = renderedRows(text, out.columns ?? 80);
   };
 
   const wasRaw = Boolean(stdin.isRaw);
@@ -436,7 +480,8 @@ function learningSource(it: LearningChoice): string {
 export function learningsPickerState(items: LearningChoice[]): PickerState {
   const rows: PickerRow[] = items.map((it, i) => ({
     id: String(i),
-    label: it.title,
+    // Found by reading past sessions and other people's PR reviews: one line each.
+    label: flatLine(it.title),
     kind: 'host' as const,
     detected: true,
     hasGlobal: false,
@@ -484,7 +529,7 @@ export function formatNonInteractiveHelp(detectedIds: string[]): string {
   ];
   const width = Math.max(...examples.map(([cmd]) => cmd.length));
   return [
-    `${b} init: no TTY to prompt on, and no --agents/--yes given — nothing written.`,
+    `${b} init: no TTY to prompt on, and no --agents/--yes given: nothing written.`,
     `detected: ${list}`,
     "",
     ...examples.map(([cmd, note]) => `  ${cmd.padEnd(width)}   # ${note}`),
@@ -507,7 +552,7 @@ export function formatPlan(
   // Codex, Hermes and Antigravity all write AGENTS.md: list each write once.
   const all = plan.filter((p) => ids.includes(p.id)).flatMap((p) => p.writes);
   const writes = [...new Map(all.map((w) => [`${w.path}\0${w.what}`, w])).values()];
-  if (writes.length === 0) return 'would write — nothing (no agents selected)';
+  if (writes.length === 0) return 'would write: nothing (no agents selected)';
 
   const pad = (rows: PlannedWrite[], f: (p: string) => string) => {
     const w = Math.max(...rows.map((r) => f(r.path).length));
@@ -517,13 +562,13 @@ export function formatPlan(
   const lines: string[] = [];
   const repoWrites = writes.filter((w) => w.scope === 'repo');
   if (repoWrites.length > 0) {
-    lines.push('would write — this repo:', ...pad(repoWrites, (p) => relative(repo, p)));
+    lines.push('would write in this repo:', ...pad(repoWrites, (p) => relative(repo, p)));
   }
   const globalWrites = writes.filter((w) => w.scope === 'global');
   if (globalWrites.length > 0) {
     if (lines.length) lines.push('');
     lines.push(
-      warn('would write — your machine, affects ALL repos:'),
+      warn('would write on your machine, affects ALL repos:'),
       ...pad(globalWrites, (p) => tilde(p, home)),
       '',
       dim('suppress the out-of-repo writes with --no-global'),

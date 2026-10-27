@@ -20,9 +20,10 @@ import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { matter, textList, warnSkipped, type FrontMatterFile } from "../util/front-matter.js";
 import { readBranchCache } from "./branches.js";
-import { PR_SPEEDUP, tokensLabel, tokensWorthSaying } from "./credit.js";
+import { tokensLabel, tokensWorthSaying } from "./credit.js";
 import type { NoteHit } from "./find-notes.js";
 import { flatLine } from "./flatten.js";
+import { isAlwaysFollow } from "./units.js";
 import { ensureRepoHome, notePlaces, shownPath } from "./home.js";
 import { LEARNING_KEYS, learningFileName, liveLearnings, newLearningId, readLearningFields, type LearningFields } from "./learning-fields.js";
 import { ensureRepoTrail, LEARNINGS_DIR, learningsDir } from "./repo-trail.js";
@@ -157,7 +158,7 @@ function rebaseTouch(t: string, checkout: string, here: string): string {
 }
 
 /** Every `.md` in `notesDir` that parses as a note, with touches rebased onto `here`. */
-function readNotesIn(notesDir: string, checkout: string, here: string, scope: LearningScope): Note[] {
+export function readNotesIn(notesDir: string, checkout: string, here: string, scope: LearningScope): Note[] {
   let files: string[];
   try {
     files = readdirSync(notesDir).filter((f) => f.endsWith(".md"));
@@ -390,7 +391,7 @@ export function formatNoteHits(hits: NoteHit[]): string[] {
   for (const { note } of hits) {
     const author = flatLine(note.author, 80);
     const who = `${author ? `${author}'s learning` : "a learning"}${note.teammate ? ", a teammate's" : ""}`;
-    lines.push(`from ${who} · ${flatLine(shortDate(note.date), 40)} · ${flatLine(note.title)}`);
+    lines.push(`from ${who}${isAlwaysFollow(note) ? " · always follow" : ""} · ${flatLine(shortDate(note.date), 40)} · ${flatLine(note.title)}`);
     const cost = costLabel(note.cost);
     for (const s of SECTIONS) {
       const lead = sectionLead(note.body, s.heading);
@@ -414,12 +415,13 @@ export const PERSONAL_SAVED_LINE = "📝 Saved just for you · stays on this mac
 
 /**
  * What starting from these learnings is worth, for the agent's closing line:
- * the tokens they saved, less what reading them costs, when that's worth
- * saying, otherwise a faster PR.
+ * the tokens they saved, less what reading them costs, when their own
+ * measured cost makes that worth saying. Null otherwise: a learning with no
+ * measured cost (one kept from `trail init` seconds ago) has earned no claim.
  */
-export function learningCredit(hits: NoteHit[]): string {
+export function learningCredit(hits: NoteHit[]): string | null {
   const saved = hits.reduce((sum, h) => sum + savedByNote(h.note), 0);
-  if (!tokensWorthSaying(saved)) return `${PR_SPEEDUP} to a PR`;
+  if (!tokensWorthSaying(saved)) return null;
   const minutes = hits.reduce((sum, h) => sum + (h.note.cost?.minutes ?? 0), 0);
   return `saved ${tokensLabel(saved)}${minutes > 0 ? ` and ~${minutes} min` : ""}`;
 }
@@ -427,12 +429,13 @@ export function learningCredit(hits: NoteHit[]): string {
 /**
  * The line that credits reused learnings, for `ask` and the agent's closing
  * line: what they took to work out, less what reading them here costs, when
- * that's worth saying, otherwise a faster PR. Null when none were shown.
+ * their own measured cost makes that worth saying. Null when none were shown
+ * or none has earned a claim.
  */
 export function learningSavingsLine(hits: NoteHit[]): string | null {
   if (!hits.length) return null;
   const saved = hits.reduce((sum, h) => sum + savedByNote(h.note), 0);
-  if (!tokensWorthSaying(saved)) return `[trail] starting from ${hits.length === 1 ? "this learning" : "these learnings"} gets you to a PR ${PR_SPEEDUP}.`;
+  if (!tokensWorthSaying(saved)) return null;
   const read = hits.reduce((sum, h) => sum + readingTokens(h.note), 0);
   const minutes = hits.reduce((sum, h) => sum + (h.note.cost?.minutes ?? 0), 0);
   const time = minutes > 0 ? ` and ~${minutes} min` : "";

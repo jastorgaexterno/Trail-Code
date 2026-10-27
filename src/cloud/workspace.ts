@@ -15,13 +15,69 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { trailHome } from "../notes/home.js";
+import { ensurePrivateDir, PRIVATE_FILE_MODE } from "../util/private-file.js";
 import { readJson, writeJsonAtomic } from "../util/state.js";
 
-/** Trail's own front end and API. TRAIL_URL (or the older GRAFT_BRAIN_URL) moves it, for a local or self-hosted Trail. */
-const DEFAULT_TRAIL_URL = "https://app.trailhq.com";
+/** Trail's own front end and API: Trail cloud, which serves the CLI routes at team.trailhq.com. */
+export const DEFAULT_TRAIL_URL = "https://team.trailhq.com";
 
+/**
+ * TEST ONLY. Points sign-in at a stand-in Trail, for tests and local demos.
+ * Taken only for a host on this machine (localhost, 127.0.0.1, [::1]) or a
+ * `.test` one, which nothing on the internet answers, so an export left in a
+ * shell can't send a sign-in, and the learnings uploaded after it, anywhere
+ * else. Never documented for users: a self-hosted Trail is `trail login
+ * --server <url>`, which the link itself carries.
+ */
+export const TEST_SERVER_ENV = "TRAIL_TEST_SERVER";
+
+/** `url` as a server address (http or https, no trailing slash), or null when it isn't one. */
+export function serverUrl(url: string | undefined): string | null {
+  const t = url?.trim().replace(/\/+$/, "");
+  if (!t || !/^https?:\/\//i.test(t)) return null;
+  try {
+    new URL(t);
+    return t;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `url` is on this machine (localhost, 127.0.0.1, [::1], *.localhost) or a `.test` host nothing on the internet answers. */
+export function isLocalServer(url: string): boolean {
+  const host = new URL(url).hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host.endsWith(".localhost") || host.endsWith(".test");
+}
+
+function testServer(env: NodeJS.ProcessEnv): string | null {
+  const url = serverUrl(env[TEST_SERVER_ENV]);
+  return url && isLocalServer(url) ? url : null;
+}
+
+/** The Trail `init --connect` or `--pair` was told with `--server`, for the rest of this process. */
+let runServer: string | null = null;
+
+/**
+ * Where a sign-in goes when nothing chose otherwise: Trail cloud. The
+ * connection then keeps the address it signed in at in cloud.json, and every
+ * later call goes there. No variable a shell might still export moves it
+ * (TRAIL_URL, or GRAFT_BRAIN_URL for the old brain API): a self-hosted Trail
+ * comes from `trail login --server`, saved on the link, or from `--server`
+ * on `init --connect` and `--pair` for that run (`useServer`); tests use
+ * TEST_SERVER_ENV.
+ */
 export function trailUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return (env.TRAIL_URL || env.GRAFT_BRAIN_URL || DEFAULT_TRAIL_URL).replace(/\/+$/, "");
+  return runServer ?? testServer(env) ?? DEFAULT_TRAIL_URL;
+}
+
+/**
+ * `--server <url>` on `init --connect` and `--pair` (and the `_trail-pair`
+ * child they start): the Trail that gave the code, for every call this
+ * process makes. Set by the command line, never read from the environment;
+ * null puts it back to Trail cloud.
+ */
+export function useServer(url: string | null): void {
+  runServer = url;
 }
 
 export interface WorkspaceInfo {
@@ -42,6 +98,12 @@ export interface Cloud {
   /** Repo keys in the workspace (`github.com/owner/name`), as of the last look. */
   repos: string[];
   linkedAt: number;
+  /**
+   * `connect`: connected by `trail init --connect <code>` from the onboarding
+   * on the web. Such a machine sends a repo summary (titles, counts, names)
+   * and never the full learnings sync, so it's never asked to add repos.
+   */
+  via?: "connect";
 }
 
 function cloudPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -51,7 +113,8 @@ function cloudPath(env: NodeJS.ProcessEnv = process.env): string {
 /** The connection, or null when this machine hasn't connected a workspace. */
 export function readCloud(env: NodeJS.ProcessEnv = process.env): Cloud | null {
   const c = readJson<Cloud>(cloudPath(env));
-  return c?.token && c.workspace?.slug ? c : null;
+  // A file edited by hand, or cut short, is no connection: every caller reads the address and the token.
+  return c && typeof c.token === "string" && c.token && typeof c.url === "string" && serverUrl(c.url) && c.workspace?.slug ? c : null;
 }
 
 /**
@@ -65,9 +128,11 @@ export function cloudEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /** Owner-only: the file holds the workspace token. */
-export const SECRET_FILE_MODE = 0o600;
+export const SECRET_FILE_MODE = PRIVATE_FILE_MODE;
 
+/** Owner-only, in an owner-only folder: the file holds the workspace token. */
 export function writeCloud(c: Cloud, env: NodeJS.ProcessEnv = process.env): void {
+  ensurePrivateDir(trailHome(env));
   writeJsonAtomic(cloudPath(env), c, false, SECRET_FILE_MODE);
 }
 
@@ -143,17 +208,41 @@ export interface HandoffRepo {
 }
 
 /**
- * Tell Trail about a sign-in link before anyone opens it: which repo the
- * agent was in, and every repo Trail knows on this machine, which is what the
- * workspace's repo picker lists. Names and counts only; no learning travels.
+ * Tell Trail about a sign-in link before anyone opens it: the repo the agent
+ * was in, which is what the workspace's repo picker lists. Its name and
+ * learning count only; no learning, no other repo and no person's name travels.
  */
 export async function registerHandoff(
   base: string,
-  req: { state: string; repo: { key: string; name: string } | null; repos: HandoffRepo[]; author: string },
+  req: { state: string; repo: { key: string; name: string } | null; repos: HandoffRepo[]; author: string; pair?: string },
   fetchImpl?: Fetch,
 ): Promise<{ url: string } | ApiError> {
   const r = await call<{ url: string }>(base, "POST", "/api/cli/handoffs", req, { fetchImpl });
   return isError(r) ? r : r.body;
+}
+
+/**
+ * Report how a `trail init --pair` run is going, for the onboarding page that
+ * shows it live. "reviewed" once the person has kept or dropped what it found
+ * (Trail takes no more), "gone" when the link expired or Trail doesn't know it.
+ */
+export async function postHandoffProgress(base: string, body: { state: string } & Record<string, unknown>, fetchImpl?: Fetch): Promise<"ok" | "reviewed" | "gone" | "error"> {
+  const r = await call(base, "POST", "/api/cli/handoffs/progress", body, { fetchImpl, timeoutMs: 15_000 });
+  if (!isError(r)) return "ok";
+  if (r.status === 409) return "reviewed";
+  if (r.status === 404 || r.status === 410) return "gone";
+  return "error";
+}
+
+/** Why a setup stopped, as Trail's page explains it. */
+export type SetupFailure = "home_folder" | "not_git" | "bad_agents" | "crashed";
+
+/**
+ * Tell the page waiting on pair code `code` why init stopped before it
+ * registered a run. Best effort: init is stopping either way.
+ */
+export async function failPair(base: string, code: string, reason: SetupFailure, fetchImpl?: Fetch): Promise<void> {
+  await call(base, "POST", "/api/cli/pairs/fail", { pair: code.trim().toUpperCase(), reason }, { fetchImpl, timeoutMs: 5_000 });
 }
 
 export type ClaimResult =
@@ -205,10 +294,27 @@ export function addRepo(c: Cloud, repo: { key: string; name: string }, fetchImpl
   return authed<{ repos: WorkspaceRepo[] }>(c, "POST", "/api/cli/repos", repo, { fetchImpl });
 }
 
+/** The laptop's other repos, by name only, for the onboarding page to offer. */
+export function sendMachineRepos(c: Cloud, state: string, repos: { key: string; name: string; last_used?: string; sessions: number }[], fetchImpl?: Fetch): Promise<object | ApiError> {
+  return authed<object>(c, "POST", "/api/cli/handoffs/repos", { state, repos }, { fetchImpl });
+}
+
+/** Which of them the person picked: null until they choose. */
+export function fetchMachinePicks(c: Cloud, state: string, fetchImpl?: Fetch): Promise<{ picks: string[] | null } | ApiError> {
+  return authed<{ picks: string[] | null }>(c, "POST", "/api/cli/handoffs/picks", { state }, { fetchImpl });
+}
+
+/** How setting up one picked repo is going, for the page. */
+export function postRepoSetup(c: Cloud, state: string, key: string, status: "setting_up" | "done" | "failed", learnings = 0, fetchImpl?: Fetch): Promise<object | ApiError> {
+  return authed<object>(c, "POST", "/api/cli/handoffs/repos/status", { state, key, status, learnings }, { fetchImpl });
+}
+
 export interface UploadedLearning {
-  /** `.trail/learnings/<name>`. */
+  /** `.trail/learnings/<name>`, or `.claude/skills/<name>/SKILL.md` for a skill. */
   path: string;
-  /** "" for the working tree, or the pushed branch it was found on (`origin/kumar/x`). */
+  /** "skill" for a skill of the repo; a plain learning leaves it out. */
+  kind?: "skill";
+  /** "" when committed at HEAD, or the pushed branch it was found on (`origin/kumar/x`). */
   ref: string;
   branch?: string;
   title: string;
@@ -219,27 +325,71 @@ export interface UploadedLearning {
   touches: string[];
   body: string;
   hash: string;
+  /** A skill's description: what it does and when to use it. */
+  why?: string;
+  /** A skill's other files: everything git tracks in its folder besides SKILL.md. */
+  files?: SkillFileUpload[];
 }
 
-export function uploadLearnings(
+export interface SkillFileUpload {
+  /** Relative to the skill's folder: `references/forms.md`, `scripts/fill.py`. */
+  path: string;
+  /** The file as text, or base64 when `encoding` says so. */
+  content: string;
+  encoding?: "base64";
+  executable?: boolean;
+}
+
+/** Most of one upload request: skills bring their folders, so a big set goes up in parts. */
+export const UPLOAD_PART_BYTES = 12 * 1024 * 1024;
+
+export async function uploadLearnings(
   c: Cloud,
-  req: { repo: { key: string; name: string }; learnings: UploadedLearning[] },
+  // removed: HEAD paths gone since the last sync on the same branch. held: how many were left out for a secret.
+  req: { repo: { key: string; name: string }; learnings: UploadedLearning[]; removed?: string[]; held?: number },
   fetchImpl?: Fetch,
 ): Promise<{ repo: string; learnings: number; added: number } | ApiError> {
-  return authed(c, "PUT", "/api/cli/learnings", req, { timeoutMs: 60_000, fetchImpl });
+  const parts: UploadedLearning[][] = [[]];
+  let bytes = 0;
+  for (const l of req.learnings) {
+    const size = JSON.stringify(l).length;
+    if (bytes + size > UPLOAD_PART_BYTES && parts.at(-1)!.length) {
+      parts.push([]);
+      bytes = 0;
+    }
+    parts.at(-1)!.push(l);
+    bytes += size;
+  }
+  let added = 0;
+  let last: { repo: string; learnings: number; added: number } | ApiError | null = null;
+  for (const learnings of parts) {
+    last = await authed<{ repo: string; learnings: number; added: number }>(c, "PUT", "/api/cli/learnings", { ...req, learnings }, { timeoutMs: 60_000, fetchImpl });
+    if (isError(last)) return last;
+    added += last.added;
+  }
+  return { ...last!, added };
 }
 
-/** One use of the learnings: a search that showed some, or a check against them. */
+/**
+ * One use of the learnings: a search that showed some, a check against them,
+ * or a coding agent using one of the repo's skills. Counts and which
+ * learnings, never content: no query (for the prompt hook that is the
+ * person's prompt), no file paths and no task.
+ */
 export interface ActivityEvent {
   repo: string;
-  kind: "search" | "check";
+  kind: "search" | "check" | "skill";
+  /** For a skill use: the skill's folder name under `.claude/skills/`. */
+  skill?: string;
   asker: string;
   session: string;
-  query: string;
-  files: string[];
-  /** File names of the learnings it showed. */
+  /** How many files the answer pointed into, or the check covered. */
+  file_count: number;
+  /** File names of the learnings it showed: the name is what the workspace knows a learning by. */
   shown_paths: string[];
   shown_authors: string[];
+  /** Tokens the map saved on this lookup (what `ask` prints as "tokens saved"); absent when unknown. */
+  saved_tokens?: number;
   at: string;
 }
 
