@@ -69,7 +69,8 @@ process.stdin.on("end", () => {
     // As Claude Code streams it: the answer's JSON in pieces, then the result.
     const json = JSON.stringify(answer);
     for (let i = 0; i < json.length; i += 40) console.log(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: json.slice(i, i + 40) } } }));
-    console.log(JSON.stringify({ type: "result", is_error: false, total_cost_usd: 0.01, structured_output: answer }));
+    // The answer is written; the run ends a little later, as a real one does.
+    setTimeout(() => console.log(JSON.stringify({ type: "result", is_error: false, total_cost_usd: 0.01, structured_output: answer })), 1500);
     return;
   }
   console.log(JSON.stringify({ is_error: false, total_cost_usd: 0.01, structured_output: answer }));
@@ -300,6 +301,8 @@ test("init --pair reads past sessions and the PRs together: both learnings saved
     // Each learning said the moment its read checked it.
     assert.match(r.err, /· found "Orders are read fresh from the database, not cached" in your past sessions/);
     assert.match(r.err, /· found "API handlers report database failures instead of hiding them" in pull requests/);
+    assert.doesNotMatch(r.err, /in pull requests\n[\s\S]*still reading pull requests/, "no 'still reading' after it already showed one");
+    assert.doesNotMatch(r.err, /in your past sessions\n[\s\S]*still reading your past sessions/);
     assert.doesNotMatch(r.err, /nothing to keep from your past sessions/, "no line saying nothing was found beside what was");
     const decisions = trail.progress().map((p) => (p.phases as PhaseRow[] | undefined)?.find((ph) => ph.id === "decisions")).filter(Boolean).at(-1);
     assert.equal(decisions?.count, "1 learning", "the page counts what the session read found");
