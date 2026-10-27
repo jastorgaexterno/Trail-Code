@@ -25,6 +25,8 @@
 import { createHash } from 'node:crypto';
 import { anchoredReviews, finishReviewRead, beginReviewRead, type ReviewFinding, type ReviewRead, type ReviewResult } from '../notes/pr-reviews.js';
 import { beginSessionRead, finishSessionRead, offeredSessions, type SessionRead, type SessionResult } from '../learn/sessions.js';
+import { learningBody } from '../learn/bar.js';
+import { flatLine } from '../notes/flatten.js';
 import type { Learning } from '../learn/bar.js';
 import { finishMemoryRead, memoryCandidates, offeredBefore, type MemoryCandidate } from '../notes/memory-notes.js';
 import type { Note } from '../notes/notes.js';
@@ -126,9 +128,17 @@ function reviewItems(anchored: ReviewFinding[], repoKey: string, closed: Set<str
     return {
       id: candidateId('review', key), kind: 'review' as const, key, plainName: '', nameWords: leadWords(f.title),
       count: { days: f.prs.length, from: f.last, to: f.last }, scope: 'repo' as const, applies: repoKey, typed: false, ticked: true,
-      review: { prs: f.prs }, evidence: [], rank: n + 1, n: 0, title: f.title, description: '',
+      review: { prs: f.prs }, detail: detailOf(f.body), evidence: [], rank: n + 1, n: 0, title: f.title, description: '',
     };
   }).filter((c) => !closed.has(c.id));
+}
+
+/** A learning's body as the lines its row opens to: "Decided: <why>", then "In the code: …"; one flat line each. */
+function detailOf(body: string): string[] {
+  const kind = body.match(/^## (.+)$/m)?.[1];
+  const lines = body.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
+  if (kind && lines[0]) lines[0] = `${kind}: ${lines[0]}`;
+  return lines.map((l) => flatLine(l, 300)).filter(Boolean);
 }
 
 /** What past sessions say was decided, as team rows: model text, so shown on the screen only, never relayed. Ticked. */
@@ -138,7 +148,7 @@ function sessionItems(offered: Learning[], repoKey: string, closed: Set<string>)
     return {
       id: candidateId('session', key), kind: 'session' as const, key, plainName: '', nameWords: leadWords(l.headline),
       count: { days: l.sources.length, from: l.last, to: l.last }, scope: 'repo' as const, applies: repoKey, typed: false, ticked: true,
-      evidence: [], rank: n + 1, n: 0, title: l.headline, description: '',
+      detail: detailOf(learningBody(l, '')), evidence: [], rank: n + 1, n: 0, title: l.headline, description: '',
     };
   }).filter((c) => !closed.has(c.id));
 }
@@ -213,7 +223,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
   const looked = reads.lb !== null;
   // Each read's learnings are said the moment it lands, before the others finish.
   const landed = (n: number, where: string, top: string | undefined) =>
-    n ? say(`· found ${n} learning${n === 1 ? '' : 's'} ${where}${top ? `, e.g. "${top}"` : ''}`) : undefined;
+    n ? say(`· found ${n} learning${n === 1 ? '' : 's'} ${where}${top ? `, e.g. "${flatLine(top, 100)}"` : ''}`) : undefined;
   void reads.sessions?.result.then((r) => landed(r.findings.length, 'in your past sessions', r.findings[0]?.headline), () => undefined);
   void reads.reviews?.result.then((r) => landed(r.findings.length, "in this repo's pull requests", r.findings[0]?.title), () => undefined);
   let lb: LookBackResult = NO_LOOK_BACK;
@@ -264,7 +274,9 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
     sentSkills: named.sentItems, reviewsRead: reviewResult?.read ?? 0, ...(named.said ? { whySaid: named.said } : {}),
     ...(looked ? {} : { lookedBack: false }),
   };
-  if (reviewResult?.why && reviewResult.why !== named.why) say(`· ${whyLine({ why: reviewResult.why, ...(reviewResult.said ? { said: reviewResult.said } : {}) }, 'PR reviews')}`);
+  if (reviewResult?.why && reviewResult.why !== named.why) say(`· ${whyLine({ why: reviewResult.why, ...(reviewResult.said ? { said: reviewResult.said } : {}) }, 'pull requests')}`);
+  if (sessionResult?.why && sessionResult.why !== named.why && sessionResult.why !== reviewResult?.why)
+    say(`· ${whyLine({ why: sessionResult.why, ...(sessionResult.said ? { said: sessionResult.said } : {}) }, 'your past sessions')}`);
 
   // D135 (3): jobs that met the bar but didn't compile, as codes; said with --verbose.
   const uncompiled = uncompiledOf((lb.refused ?? []).map((u) => ({ job: u.job, days: u.days, why: u.why.split(', ') })));

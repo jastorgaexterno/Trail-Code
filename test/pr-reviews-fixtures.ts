@@ -3,10 +3,22 @@
 export const human = (login: string) => ({ login, __typename: "User" });
 export const bot = { login: "coderabbitai", __typename: "Bot" };
 
+/** `answer` with each PR, comment, review and thread comment by a person marked as a member of the repo (GitHub's authorAssociation). */
+function onTeam<T>(answer: T): T {
+  const mark = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(mark);
+    if (!v || typeof v !== "object") return v;
+    const o = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === "author" ? x : mark(x)]));
+    const a = (v as { author?: { __typename?: string } }).author;
+    return a && a.__typename !== "Bot" && !("authorAssociation" in o) ? { ...o, authorAssociation: "MEMBER" } : o;
+  };
+  return mark(answer) as T;
+}
+
 export const HUNK = "@@ -10,6 +10,8 @@ export async function orders(req) {\n   const rows = await db.query(sql);\n+  // TODO\n   return rows;";
 
-/** GitHub's GraphQL answer for four merged PRs (one reviewed only by a bot) and one closed without merging. */
-export const GITHUB = {
+/** GitHub's GraphQL answer for four merged PRs (one reviewed only by a bot) and one closed without merging; every person in it is on the team. */
+export const GITHUB = onTeam({
   data: {
     repository: {
       closed: {
@@ -80,4 +92,4 @@ export const GITHUB = {
       },
     },
   },
-};
+});

@@ -104,6 +104,12 @@ test("a big transcript is read in pieces, not loaded whole", () => {
   assert.ok(process.memoryUsage().rss - before < 100 * 1024 * 1024, "memory stays well under the file's 30 MB times a few");
 });
 
+/** Puts an env var back as it was: unset when it was unset (assigning undefined would set the string "undefined"). */
+function restore(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 function readWith(findings: SessionResult["findings"]): SessionRead {
   const result: SessionResult = { sessions: 3, read: 3, findings, durationMs: 10, model: "claude-sonnet-5-5", newest: "2026-10-20T10:00:00Z", costUsd: 0.12 };
   return { started: Date.now(), done: true, result: Promise.resolve(result) };
@@ -130,8 +136,8 @@ test("finishSessionRead saves each learning with its plain title, and the repo i
     assert.equal(mark.ms, 10);
     assert.equal(beginSessionRead(repo, { ...process.env }), null, "read once per repo");
   } finally {
-    process.env.TRAIL_HOME = env.TRAIL_HOME;
-    process.env.DO_NOT_TRACK = env.DO_NOT_TRACK;
+    restore("TRAIL_HOME", env.TRAIL_HOME);
+    restore("DO_NOT_TRACK", env.DO_NOT_TRACK);
   }
 });
 
@@ -158,6 +164,43 @@ test("with no past sessions here the read finds none and leaves no mark, so the 
     assert.equal(existsSync(join(ensureRepoHome(repo).place.dir, "session-learnings.json")), false);
     assert.ok(beginSessionRead(repo, env), "nothing was read, so the next init reads");
   } finally {
-    process.env.TRAIL_HOME = saved;
+    restore("TRAIL_HOME", saved);
   }
+});
+
+test("secrets are scrubbed before anything is clipped: a long private key, a Stripe key, an env line, a token at the clip edge", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sl-secrets-"));
+  const path = join(dir, "s.jsonl");
+  const pem = `-----BEGIN RSA PRIVATE KEY-----\n${"MIIEpAIBAAKCAQEA".repeat(120)}\n-----END RSA PRIVATE KEY-----`;
+  const edge = `${"x ".repeat(493)}ghp_${"b".repeat(36)} more`;
+  writeFileSync(
+    path,
+    [
+      user(`here is the key ${pem}`),
+      user(`use sk_live_${"c".repeat(24)} for billing`),
+      user(`AWS_SECRET_ACCESS_KEY=${"d".repeat(40)} in the env`),
+      user(edge),
+    ].join("\n") + "\n",
+  );
+  const text = sessionsDigest([{ id: "abcdef12-3456", at: "2026-10-20T10:00:00Z", prompts: [], path }], 100_000).text;
+  assert.ok(!text.includes("MIIEpAIBAAKCAQEA"), "no part of the key");
+  assert.ok(!text.includes("sk_live_c"), "no Stripe key");
+  assert.ok(!text.includes("d".repeat(20)), "no AWS secret");
+  assert.ok(!/ghp_b/.test(text), "no piece of a token cut by the clip");
+  assert.match(text, /AWS_SECRET_ACCESS_KEY=\[redacted\]/);
+});
+
+test("a session bigger than the digest keeps its newest end, and quotes are checked only against what was sent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sl-big-"));
+  const path = join(dir, "s.jsonl");
+  const rows = [user("the oldest thing said in this long session, about the build")];
+  for (let i = 0; i < 400; i++) rows.push(user(`filler line number ${i} `.repeat(10)));
+  rows.push(user("the newest decision: keep sign-up as the first screen"));
+  writeFileSync(path, rows.join("\n") + "\n");
+  const d = sessionsDigest([{ id: "abcdef12-3456", at: "2026-10-20T10:00:00Z", prompts: [], path }], 20_000);
+  assert.ok(d.text.length <= 20_000);
+  assert.match(d.text, /^=== session abcdef12/);
+  assert.match(d.text, /the newest decision: keep sign-up as the first screen/);
+  assert.ok(!d.text.includes("the oldest thing said"));
+  assert.ok(!d.sources[0]!.said.some((l) => l.includes("oldest thing said")), "a quote from the part left out can't verify");
 });

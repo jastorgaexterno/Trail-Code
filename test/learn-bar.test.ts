@@ -76,8 +76,8 @@ test("a long headline ends at its last clause break, or at a whole word, never m
 });
 
 test("sameLearning also matches two learnings whose bodies name the same code, in other words", () => {
-  const pr = { title: "Don't reuse one CSS class name across unrelated pages; it caused overlap and cut-off bugs", body: "- In the code: Renamed: sign-in picture cards `note` → `bnote`; chat bubble `me` → `.dc-msg.you` (the account button styles `me` as a 32px row)." };
-  const past = { title: "Reuse of a short global style name cut off chat messages", body: "- In the code: `.me` in web/src/styles/app.css is the account button. The chat bubble is `.dc-msg.you` in journey.css." };
+  const pr = { title: "Don't reuse one CSS class name across unrelated pages; it caused overlap and cut-off bugs", body: "## Watch out\n- In the code: Renamed: sign-in picture cards `note` → `bnote`; chat bubble `me` → `.dc-msg.you` (the account button styles `me` as a 32px row)." };
+  const past = { title: "Reuse of a short global style name cut off chat messages", body: "## Watch out\n- In the code: `.me` in web/src/styles/app.css is the account button. The chat bubble is `.dc-msg.you` in journey.css." };
   assert.equal(sameLearning(pr.title, past.title), false, "the headlines alone don't say it");
   assert.equal(sameLearning(pr.title, past.title, pr.body, past.body), true);
   assert.equal(
@@ -85,4 +85,14 @@ test("sameLearning also matches two learnings whose bodies name the same code, i
     false,
     "one short shared name is not enough",
   );
+});
+
+test("sameLearning keeps apart learnings that mean the opposite, are about other things, or are another kind", () => {
+  assert.equal(sameLearning("Use pnpm, never npm, in this repo", "Never use yarn in this repo"), false);
+  assert.equal(sameLearning("Sign-up must be the first onboarding screen", "Onboarding screen must not ask for sign-up"), false, "one says not");
+  assert.equal(sameLearning("Deploys go through staging before production", "Database migrations go through staging before production"), false);
+  const code = "- In the code: `src/net/client.ts` wraps calls in `withRetry`.";
+  assert.equal(sameLearning("Network calls retry four times", "Retries were dropped for payments", `## Decided\n${code}`, `## Tried and ruled out\n${code}`), false, "another kind");
+  assert.equal(sameLearning("Network calls retry four times", "Payments never call the client twice", `## Decided\n${code}`, `## Decided\n${code}`), false, "nothing in common but the code");
+  assert.equal(sameLearning("Sign-up comes first, before any onboarding screen", "Sign-up always comes first before onboarding"), true);
 });

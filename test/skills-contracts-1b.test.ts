@@ -146,7 +146,7 @@ test("init/types.ts: init's shared types, types only", () => {
   assert.deepEqual(literals(declarations(text, "InitKind")[0]!), ["skill", "guardrail", "preference", "review", "session", "claude"]);
   assert.deepEqual(fields(declarations(text, "TypedRef")[0]!), ["t", "o", "s"]);
   assert.deepEqual(fields(declarations(text, "InitCandidate")[0]!),
-    ["id", "kind", "key", "plainName", "nameWords", "count", "scope", "applies", "typed", "ticked", "skill", "guardrail", "pref", "review", "memory", "evidence", "rank"]);
+    ["id", "kind", "key", "plainName", "nameWords", "count", "scope", "applies", "typed", "ticked", "skill", "guardrail", "pref", "review", "memory", "detail", "evidence", "rank"]);
   assert.deepEqual(fields(declarations(text, "InitItem")[0]!), ["n", "title", "description"]);
   assert.match(text, /export interface InitItem extends InitCandidate\b/);
   assert.deepEqual(fields(declarations(text, "LookBack")[0]!),

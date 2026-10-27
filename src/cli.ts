@@ -1663,7 +1663,12 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
         pair.phase("decisions", "running", "", "Reading what was decided in past Claude sessions");
         const run = pair;
         void sessions.result.then(
-          (r) => run.phase("decisions", "done", `${r.findings.length} learning${r.findings.length === 1 ? "" : "s"}`, r.read ? `Read ${r.read} past Claude session${r.read === 1 ? "" : "s"}: ${r.findings.length} learning${r.findings.length === 1 ? "" : "s"}` : "No past Claude sessions here"),
+          (r) =>
+            r.reason === "no_claude" || r.reason === "failed"
+              ? run.phase("decisions", "done", "skipped", "Claude Code couldn't read past sessions this time")
+              : r.reason === "no_sessions"
+                ? run.phase("decisions", "done", "none here", "No past Claude sessions here")
+                : run.phase("decisions", "done", `${r.findings.length} learning${r.findings.length === 1 ? "" : "s"}`, `Read ${r.read} past Claude session${r.read === 1 ? "" : "s"}: ${r.findings.length} learning${r.findings.length === 1 ? "" : "s"}`),
           () => run.phase("decisions", "done", "skipped"),
         );
       } else if (lookBack?.reads.lb) pair.phase("decisions", "running", "", "Reading past Claude sessions");

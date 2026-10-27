@@ -53,7 +53,7 @@ export function detailLines(item: InitItem, env: NodeJS.ProcessEnv): string[] {
     }
     return out.length ? out : ["Trail couldn't read these lines again just now."];
   }
-  return [];
+  return item.detail ?? [];
 }
 
 /** `quit`: Ctrl-C or q, which always leave; `esc` closes an open draft first. */

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { beginLookBack, finishLookBack } from "../src/init/run.js";
 import { screenLines } from "../src/init/review-screen.js";
+import { detailLines } from "../src/init/review-tty.js";
 import type { InitItem } from "../src/init/types.js";
 import { claudeProjectDir } from "../src/notes/session-cost.js";
 import { factsOf, REPO_KEY, threeItems } from "./init-screen-fixtures.js";
@@ -151,4 +152,10 @@ test("esc on the screen keeps no team row and marks none offered, so the next in
     assert.deepEqual(learningsIn(repo), []);
     assert.equal(beginLookBack(repo, { env, deps: atTerminal, plain: true }).reads.memory.length, 1, "offered again");
   });
+});
+
+test("s on a learning from past sessions or the PRs shows what its file will say, before it's kept", () => {
+  const row = teamRow({ kind: "session", key: "session:x", review: undefined, title: "Sign up comes first", detail: ["Decided: the owner reversed a read-first build.", "In the code: every /start page sends signed-out people to sign up."] });
+  assert.deepEqual(detailLines(row, process.env), ["Decided: the owner reversed a read-first build.", "In the code: every /start page sends signed-out people to sign up."]);
+  assert.deepEqual(detailLines(teamRow({ detail: ["Watch out: handlers must return a 500."] }), process.env), ["Watch out: handlers must return a 500."]);
 });

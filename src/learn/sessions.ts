@@ -29,7 +29,7 @@ import { track } from "../telemetry/track.js";
 import { readJson, writeJsonAtomic } from "../util/state.js";
 import { noteAuthor } from "../notes/git-facts.js";
 import { ensureRepoHome } from "../notes/home.js";
-import { listNotes, shortDate, writeNote, type Note } from "../notes/notes.js";
+import { shortDate, writeNote, type Note } from "../notes/notes.js";
 import { alreadySaid, codeAnchors, knownText } from "../notes/team-check.js";
 
 /** About 25k tokens: a handful of recent sessions, whole where it matters. */
@@ -43,7 +43,6 @@ const PLAN_CHARS = 1_500;
 const RAN_CHARS = 900;
 /** A reply that says a decision, a cause or a reversal stays whole. */
 const DECISION = /\b(decided|instead|ruled out|won't|wont|reverted?|rolled back|root cause|the cause|turned out|because|trade-?off|we chose|going with|dropped|not worth)\b/i;
-const FOOTER = /_From past Claude sessions here/;
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n).trimEnd()}…` : s);
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -76,23 +75,23 @@ export function sessionLines(path: string, stretch?: { from: number; to: number 
             for (const p of content as Array<{ type?: string; tool_use_id?: string; content?: unknown }>) {
               if (p?.type !== "tool_result" || !p.tool_use_id || !asks.has(p.tool_use_id)) continue;
               const said = typeof p.content === "string" ? p.content : Array.isArray(p.content) ? (p.content as Array<{ text?: string }>).map((x) => x?.text ?? "").join(" ") : "";
-              entries.push({ kind: "answered", text: `${asks.get(p.tool_use_id)} -> ${clip(oneLine(said), ANSWER_CHARS)}` });
+              entries.push({ kind: "answered", text: `${asks.get(p.tool_use_id)} -> ${clip(oneLine(scrub(said)), ANSWER_CHARS)}` });
             }
           }
           const typed = typedText(r);
-          if (typed) entries.push({ kind: "person", text: clip(oneLine(typed), TYPED_CHARS) });
+          if (typed) entries.push({ kind: "person", text: clip(oneLine(scrub(typed)), TYPED_CHARS) });
         } else if (r.type === "assistant" && Array.isArray(content)) {
           for (const p of content as Array<{ type?: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>) {
-            if (p?.type === "text" && typeof p.text === "string" && p.text.trim().length > 40) entries.push({ kind: "claude", text: oneLine(p.text) });
+            if (p?.type === "text" && typeof p.text === "string" && p.text.trim().length > 40) entries.push({ kind: "claude", text: oneLine(scrub(p.text)) });
             if (p?.type !== "tool_use") continue;
             const input = p.input ?? {};
             if (p.name === "AskUserQuestion" && p.id) {
               const qs = Array.isArray(input.questions) ? (input.questions as Array<{ question?: string }>).map((q) => q?.question ?? "").filter(Boolean) : [];
-              if (qs.length) asks.set(p.id, oneLine(qs.join(" / ")));
+              if (qs.length) asks.set(p.id, oneLine(scrub(qs.join(" / "))));
             }
-            if (p.name === "ExitPlanMode" && typeof input.plan === "string") entries.push({ kind: "plan", text: clip(oneLine(input.plan), PLAN_CHARS) });
+            if (p.name === "ExitPlanMode" && typeof input.plan === "string") entries.push({ kind: "plan", text: clip(oneLine(scrub(input.plan)), PLAN_CHARS) });
             const cmd = typeof input.command === "string" ? input.command : "";
-            if (/\bgit commit\b|\bgh pr create\b/.test(cmd)) entries.push({ kind: "ran", text: clip(oneLine(cmd), RAN_CHARS) });
+            if (/\bgit commit\b|\bgh pr create\b/.test(cmd)) entries.push({ kind: "ran", text: clip(oneLine(scrub(cmd)), RAN_CHARS) });
           }
         }
       },
@@ -110,7 +109,12 @@ export function sessionLines(path: string, stretch?: { from: number; to: number 
   });
 }
 
-/** Sessions as one text for Claude, newest first, cut at `maxChars`; each headed by the id learnings cite. */
+/**
+ * Sessions as one text for Claude, newest first, cut at `maxChars`; each
+ * headed by the id learnings cite. A newest session bigger than that keeps its
+ * latest lines. `sources` hold only the lines sent, so a quote is checked
+ * against what Claude saw.
+ */
 export function sessionsDigest(sessions: PastSession[], maxChars = SESSION_DIGEST_CHARS, opts: { full?: boolean } = {}): { text: string; sources: QuoteSource[]; read: string[] } {
   const parts: string[] = [];
   const sources: QuoteSource[] = [];
@@ -118,13 +122,20 @@ export function sessionsDigest(sessions: PastSession[], maxChars = SESSION_DIGES
   let size = 0;
   for (const s of [...sessions].sort((a, b) => b.at.localeCompare(a.at))) {
     if (!s.path) continue;
-    const lines = sessionLines(s.path, s.stretch, opts).map(scrub);
+    let lines = sessionLines(s.path, s.stretch, opts).map(scrub);
     if (!lines.length) continue;
     const id = s.id.slice(0, 8);
-    let block = `=== session ${id} (${s.at.slice(0, 10)}${s.branch ? `, branch ${s.branch}` : ""})\n${lines.join("\n")}`;
+    const head = `=== session ${id} (${s.at.slice(0, 10)}${s.branch ? `, branch ${s.branch}` : ""})`;
+    let block = `${head}\n${lines.join("\n")}`;
     if (size + block.length > maxChars) {
       if (parts.length) break;
-      block = block.slice(0, maxChars);
+      // The newest session alone is too big: its latest lines, where the last decisions are.
+      let room = maxChars - head.length - 1;
+      let from = lines.length;
+      while (from > 0 && room - (lines[from - 1]!.length + 1) >= 0) room -= lines[--from]!.length + 1;
+      lines = lines.slice(from);
+      if (!lines.length) continue;
+      block = `${head}\n${lines.join("\n")}`;
     }
     parts.push(block);
     sources.push({ id, at: s.at, said: lines.map(norm) });
@@ -290,9 +301,4 @@ export async function finishSessionRead(
     { repo },
   );
   return { result, saved, kept, offered: offered.length, cancelled: chosen === null };
-}
-
-/** Whether this repo's learnings already hold ones read from past sessions (a teammate's, committed). */
-export function sessionsReadHere(repo: string): boolean {
-  return listNotes(repo, { branches: false }).some((n) => n.scope === "repo" && FOOTER.test(n.body));
 }

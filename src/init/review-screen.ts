@@ -52,7 +52,7 @@ export const INIT_COPY: Record<string, string> = {
   preferences: 'Learnings',
   reviews: 'From PR reviews',
   team: "Your teammates' Claude doesn't know these yet",
-  keys1: '↑↓ move · space tick · s see the steps · enter keep ticked · n keep nothing',
+  keys1: '↑↓ move · space tick · s see more · enter keep ticked · n keep nothing',
   keys2: 'w every repo or this repo · r add a learning to this repo (committed) · esc decide later',
   skillsOff: 'skills are off · trail skills on lets init also find repeated jobs and keep their steps',
   skillCount: 'Claude worked out how to {job} from scratch on {days} different days.',

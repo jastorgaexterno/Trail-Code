@@ -104,11 +104,19 @@ const FLAGGED = /_(?:From PRs? #\d+(?:, #\d+)*|From review on #\d+(?:, #\d+)*|Fl
 /* Reading the reviews                                                        */
 /* -------------------------------------------------------------------------- */
 
-const PR_FIELDS = `number title body mergedAt closedAt
-        author { login }
-        comments(first: 30) { nodes { body author { login __typename } } }
-        reviews(first: 20) { nodes { body author { login __typename } } }
-        reviewThreads(first: 30) { nodes { isResolved isOutdated path comments(first: 5) { nodes { body path diffHunk author { login __typename } } } } }`;
+const PR_FIELDS = `number title body mergedAt closedAt authorAssociation
+        author { login __typename }
+        comments(first: 30) { nodes { body authorAssociation author { login __typename } } }
+        reviews(first: 20) { nodes { body authorAssociation author { login __typename } } }
+        reviewThreads(first: 30) { nodes { isResolved isOutdated path comments(first: 5) { nodes { body path diffHunk authorAssociation author { login __typename } } } } }`;
+
+/**
+ * Whose words are read: the repo's owner, members and collaborators. On a
+ * public repo anyone can open a PR or comment, and what's read can become a
+ * learning every teammate's agent follows.
+ */
+const TEAM = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const onTeam = (n: { authorAssociation?: string } | null | undefined) => TEAM.has(n?.authorAssociation ?? "");
 
 const QUERY = `query($owner: String!, $name: String!, $merged: Int!, $closed: Int!) {
   repository(owner: $owner, name: $name) {
@@ -164,6 +172,7 @@ interface GqlComment {
   body?: string;
   path?: string;
   diffHunk?: string;
+  authorAssociation?: string;
   author?: Actor | null;
 }
 interface GqlPR {
@@ -173,6 +182,7 @@ interface GqlPR {
   mergedAt?: string;
   closedAt?: string;
   author?: Actor | null;
+  authorAssociation?: string;
   comments?: { nodes?: GqlComment[] };
   reviews?: { nodes?: GqlComment[] };
   reviewThreads?: { nodes?: { isResolved?: boolean; isOutdated?: boolean; path?: string; comments?: { nodes?: GqlComment[] } }[] };
@@ -199,16 +209,17 @@ export function reviewWords(raw: string): string | null {
     .replace(/\s+/g, " ")
     .trim();
   if (!t) return null;
-  if (t.length > COMMENT_CHARS) t = `${t.slice(0, COMMENT_CHARS)}…`;
-  return scrub(t);
+  // Scrubbed before it's clipped, so a clip never leaves part of a key behind.
+  t = scrub(t);
+  return t.length > COMMENT_CHARS ? `${t.slice(0, COMMENT_CHARS)}…` : t;
 }
 
 /** The last lines of a comment's diff hunk: the code it was left on, scrubbed. */
 export function commentedCode(hunk: string | undefined): string | undefined {
   const lines = (hunk ?? "").split("\n").filter((l) => !l.startsWith("@@"));
   if (!lines.length) return undefined;
-  const code = lines.slice(-CODE_LINES).join("\n").slice(-CODE_CHARS).trim();
-  return code ? scrub(code) : undefined;
+  const code = scrub(lines.slice(-CODE_LINES).join("\n")).slice(-CODE_CHARS).trim();
+  return code || undefined;
 }
 
 /** A PR description as text for Claude: no HTML comments or images, blank runs folded, secrets scrubbed. */
@@ -219,16 +230,18 @@ function descriptionWords(raw: string | undefined): string | undefined {
     .replace(/\n\s*\n+/g, "\n")
     .trim();
   if (!t) return undefined;
-  if (t.length > DESCRIPTION_CHARS) t = `${t.slice(0, DESCRIPTION_CHARS)}…`;
-  return scrub(t);
+  t = scrub(t);
+  return t.length > DESCRIPTION_CHARS ? `${t.slice(0, DESCRIPTION_CHARS)}…` : t;
 }
 
 /**
  * The PRs in GitHub's answer worth reading, newest first, and how many merged
  * PRs it had: each with its description, the comments and review summaries
  * people left, and every inline thread comment (marked when the author acted
- * on it). Bots don't count, nor the PR author's own replies in a thread; a
- * deleted account does. A PR with no description to speak of and nothing
+ * on it). Only the owner, members and collaborators are read, never bots,
+ * nor the PR author's own replies in a thread; a PR a bot opened is skipped,
+ * and one closed without merging is read without its description unless its
+ * author is on the team. A PR with no description to speak of and nothing
  * said on it is left out.
  */
 export function reviewedPRs(data: unknown): { merged: number; prs: ReviewedPR[] } {
@@ -239,23 +252,23 @@ export function reviewedPRs(data: unknown): { merged: number; prs: ReviewedPR[] 
   const prs: ReviewedPR[] = [];
   const read = (pr: GqlPR | null, kind: ReviewedPR["kind"]) => {
     const at = kind === "merged" ? pr?.mergedAt : pr?.closedAt;
-    if (!pr || typeof pr.number !== "number" || !at || (kind === "closed" && pr.mergedAt)) return;
+    if (!pr || typeof pr.number !== "number" || !at || (kind === "closed" && pr.mergedAt) || isBot(pr.author)) return;
     const author = pr.author?.login;
     const comments: ReviewedPR["comments"] = [];
     for (const c of pr.comments?.nodes ?? []) {
-      if (!c || isBot(c.author)) continue;
+      if (!c || isBot(c.author) || !onTeam(c)) continue;
       const text = reviewWords(c.body ?? "");
       if (text) comments.push({ text, where: "comment" });
     }
     for (const r of pr.reviews?.nodes ?? []) {
-      if (!r || isBot(r.author) || (author && r.author?.login === author)) continue;
+      if (!r || isBot(r.author) || !onTeam(r) || (author && r.author?.login === author)) continue;
       const text = reviewWords(r.body ?? "");
       if (text) comments.push({ text, where: "review" });
     }
     for (const thread of pr.reviewThreads?.nodes ?? []) {
       const actedOn = !!(thread?.isOutdated || thread?.isResolved);
       for (const c of thread?.comments?.nodes ?? []) {
-        if (!c || isBot(c.author) || (author && c.author?.login === author)) continue;
+        if (!c || isBot(c.author) || !onTeam(c) || (author && c.author?.login === author)) continue;
         const text = reviewWords(c.body ?? "");
         const path = c.path ?? thread?.path;
         if (!text || !path) continue;
@@ -263,7 +276,7 @@ export function reviewedPRs(data: unknown): { merged: number; prs: ReviewedPR[] 
         comments.push({ path, text, actedOn, where: "thread", ...(code ? { code } : {}) });
       }
     }
-    const description = descriptionWords(pr.body);
+    const description = kind === "merged" || onTeam(pr) ? descriptionWords(pr.body) : undefined;
     if (!comments.length && (description?.length ?? 0) < SAYS_SOMETHING) return;
     prs.push({ number: pr.number, title: scrub(pr.title ?? "").slice(0, 120), at, kind, ...(description ? { description } : {}), comments });
   };
@@ -316,7 +329,7 @@ export function repoDocs(repo: string): { id: string; text: string }[] {
   const out: { id: string; text: string }[] = [];
   for (const p of paths) {
     const text = readPlain(join(repo, p), 512 * 1024);
-    if (text?.trim()) out.push({ id: `doc ${p}`, text: scrub(text.trim().slice(0, DOC_CHARS)) });
+    if (text?.trim()) out.push({ id: `doc ${p}`, text: scrub(text.trim()).slice(0, DOC_CHARS) });
   }
   return out;
 }
@@ -324,7 +337,7 @@ export function repoDocs(repo: string): { id: string; text: string }[] {
 /** The repo's revert commits, newest first: what was tried and backed out. */
 export function revertCommits(repo: string): string {
   const r = spawnSync("git", ["-C", repo, "log", "-n", "400", "--grep=^Revert", "--format=%h %ad %s%n%b%n---", "--date=short"], { encoding: "utf8", timeout: 15_000, maxBuffer: 16 * 1024 * 1024 });
-  return r.status === 0 ? scrub(r.stdout.trim().slice(0, DOC_CHARS)) : "";
+  return r.status === 0 ? scrub(r.stdout.trim()).slice(0, DOC_CHARS) : "";
 }
 
 /* -------------------------------------------------------------------------- */

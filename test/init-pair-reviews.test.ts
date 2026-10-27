@@ -34,7 +34,7 @@ function githubRepo(): string {
 }
 
 /** A signed-in `gh` that answers the GraphQL call, and a `claude` that names one finding from the reviews (and `sessions` from past sessions); both log. */
-function fakeTools(sessions: object[] = []): { bin: string; log: string } {
+function fakeTools(sessions: object[] | "fail" = []): { bin: string; log: string } {
   const bin = mkdtempSync(join(tmpdir(), "pair-tools-"));
   const log = join(bin, "log");
   mkdirSync(log);
@@ -63,7 +63,8 @@ process.stdin.on("end", () => {
   const review = input.startsWith("This repository's recent pull requests");
   const past = input.startsWith("Past Claude Code sessions in this repository");
   fs.writeFileSync(${JSON.stringify(log)} + (review ? "/reviews.txt" : past ? "/sessions.txt" : "/other.txt"), input);
-  const answer = review ? ${JSON.stringify(reviews)} : past ? { findings: ${JSON.stringify(sessions)} } : { findings: [] };
+  if (past && ${JSON.stringify(sessions === "fail")}) { console.log(JSON.stringify({ is_error: true, result: "API Error: overloaded" })); process.exit(1); }
+  const answer = review ? ${JSON.stringify(reviews)} : past ? { findings: ${JSON.stringify(sessions === "fail" ? [] : sessions)} } : { findings: [] };
   console.log(JSON.stringify({ is_error: false, total_cost_usd: 0.01, structured_output: answer }));
 });
 `,
@@ -279,6 +280,24 @@ test("the same learning from past sessions and the PRs is saved once, as the PR 
     const r = await agentInit(repo, home, bin, ["--pair", "X4GM5OQU4NIA65ZR", "--server", trail.url]);
     assert.equal(r.code, 0, r.err);
     assert.deepEqual(titlesIn(repo), ["API handlers report database failures instead of hiding them"]);
+  } finally {
+    trail.close();
+  }
+});
+
+test("a session read Claude couldn't finish says why, and the page says skipped, not 0 learnings", { skip: process.platform === "win32" }, async () => {
+  const trail = await standInTrail();
+  try {
+    const home = tmpRepo("sess-fail-home");
+    mkdirSync(join(home, ".claude"));
+    const repo = githubRepo();
+    pastSession(repo, home);
+    const { bin } = fakeTools("fail");
+    const r = await agentInit(repo, home, bin, ["--pair", "X4GM5OQU4NIA65ZR", "--server", trail.url]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.err, /so trail couldn't read your past sessions\. To try again: trail init --look-back/);
+    const decisions = trail.progress().map((p) => (p.phases as PhaseRow[] | undefined)?.find((ph) => ph.id === "decisions")).filter(Boolean).at(-1);
+    assert.equal(decisions?.count, "skipped");
   } finally {
     trail.close();
   }

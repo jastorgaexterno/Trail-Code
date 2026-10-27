@@ -155,7 +155,9 @@ export function learningBody(l: Learning, from: string): string {
   return `${lines.join("\n")}\n\n${from}`;
 }
 
-const STOP = new Set(["the", "and", "for", "not", "but", "any", "all", "are", "was", "with", "its", "has", "have", "from", "into", "than", "that", "this", "they", "them", "their", "instead", "every", "always", "never", "before", "after", "only", "just", "comes", "come", "must", "should", "can", "cannot", "does", "don", "doesn", "isn", "one", "new"]);
+const STOP = new Set(["the", "and", "for", "not", "but", "any", "all", "are", "was", "with", "its", "has", "have", "from", "into", "than", "that", "this", "they", "them", "their", "instead", "every", "always", "never", "before", "after", "only", "just", "comes", "come", "must", "should", "can", "cannot", "does", "don", "doesn", "isn", "one", "new",
+  "use", "using", "used", "repo", "here", "through", "via", "per", "our", "out", "when", "what", "which", "who", "how", "make", "keep", "kept", "get", "got", "need", "needs", "now", "also", "still", "will", "would", "each", "first"]);
+const NEGATION = /\b(?:not|never|no|don'?t|doesn'?t|isn'?t|won'?t|can'?t|cannot|without|instead of)\b/i;
 
 function contentWords(s: string): Set<string> {
   return new Set(
@@ -171,10 +173,15 @@ function codeNames(body: string): Set<string> {
   return new Set([...body.matchAll(/`([^`\n]{1,120})`/g)].map((m) => m[1]!.trim().toLowerCase().replace(/^\./, "")).filter(Boolean));
 }
 
+/** The kind a learning's body is filed under (its first "## " heading), or null. */
+const kindOf = (body: string) => body.match(/^## (Decided|Tried and ruled out|Watch out)\s*$/m)?.[1] ?? null;
+
 /**
- * Two learnings say the same thing: their headlines' content words overlap at
- * least 60% of the shorter one's, or (given their bodies) the bodies name two
- * of the same pieces of code in backticks, one of them 6 characters or more.
+ * Two learnings say the same thing. Their headlines share 3 or more content
+ * words, at least 60% of the shorter one's, and both or neither say "not"; or,
+ * given their bodies, those are the same kind, name two of the same pieces of
+ * code in backticks (one of them 6 characters or more), and the headlines
+ * share 2 content words.
  */
 export function sameLearning(a: string, b: string, aBody = "", bBody = ""): boolean {
   const x = contentWords(a);
@@ -182,7 +189,10 @@ export function sameLearning(a: string, b: string, aBody = "", bBody = ""): bool
   const small = Math.min(x.size, y.size);
   let shared = 0;
   for (const w of x) if (y.has(w)) shared++;
-  if (small && shared / small >= 0.6) return true;
+  if (shared >= 3 && shared / small >= 0.6 && NEGATION.test(a) === NEGATION.test(b)) return true;
+  const ka = kindOf(aBody);
+  const kb = kindOf(bBody);
+  if (shared < 2 || (ka && kb && ka !== kb)) return false;
   const bn = codeNames(bBody);
   const both = [...codeNames(aBody)].filter((n) => bn.has(n));
   return both.length >= 2 && both.some((n) => n.length >= 6);

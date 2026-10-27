@@ -50,6 +50,8 @@ export interface InitCandidate {
   review?: { prs: number[] };
   /** #662: the Claude Code memory note a team row came from. */
   memory?: { path: string };
+  /** A learning from the PRs or past sessions: what its file will say, shown when its row is opened. */
+  detail?: string[];
   /** Counted words for the screen, e.g. 'your how-to release-notes.md describes it'. */
   evidence: string[];
   rank: number;
