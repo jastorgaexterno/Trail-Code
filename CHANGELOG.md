@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.27.1
+
+### Fixed
+
+- **Agents get Trail's tools after a sign-in run through npx.** On a laptop
+  without `trail` installed, `npx -y @trailhq/trail-code login --code …`
+  signed in but pointed Claude Code, Codex and Cursor at a `trail` command
+  that wasn't there, so they got no tools. They now start Trail through npx.
+
 ## 0.27.0
 
 ### Added
