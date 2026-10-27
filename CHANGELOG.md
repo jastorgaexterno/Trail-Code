@@ -18,9 +18,11 @@
   `.trail/workspace.json` when it shares a repo. A teammate who pulls it and
   isn't signed in gets one offer from their agent to sign in to the same
   workspace.
-- **Learnings worth reading on the first run.** `trail init` reads past
-  sessions and merged PR conversations together and keeps only learnings
-  people would value on day one (#701).
+- **Setup learns from your past work.** Setup now learns from your past
+  Claude Code sessions and your team's pull requests, with titles a teammate
+  can read (#701).
+- **Learnings show up as they're found.** Each learning shows up the moment
+  it's found, in the terminal and on Trail's page (#703).
 - **The code map builds itself.** The first `trail` query in a repo without
   a code map builds one (#704).
 
