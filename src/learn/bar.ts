@@ -166,13 +166,24 @@ function contentWords(s: string): Set<string> {
   );
 }
 
-/** Two headlines say the same thing: their content words overlap at least 60% of the shorter one's. */
-export function sameLearning(a: string, b: string): boolean {
+/** The code a body names in backticks, lowercased, without a leading dot (`.me` and `me` are one name). */
+function codeNames(body: string): Set<string> {
+  return new Set([...body.matchAll(/`([^`\n]{1,120})`/g)].map((m) => m[1]!.trim().toLowerCase().replace(/^\./, "")).filter(Boolean));
+}
+
+/**
+ * Two learnings say the same thing: their headlines' content words overlap at
+ * least 60% of the shorter one's, or (given their bodies) the bodies name two
+ * of the same pieces of code in backticks, one of them 6 characters or more.
+ */
+export function sameLearning(a: string, b: string, aBody = "", bBody = ""): boolean {
   const x = contentWords(a);
   const y = contentWords(b);
   const small = Math.min(x.size, y.size);
-  if (!small) return false;
   let shared = 0;
   for (const w of x) if (y.has(w)) shared++;
-  return shared / small >= 0.6;
+  if (small && shared / small >= 0.6) return true;
+  const bn = codeNames(bBody);
+  const both = [...codeNames(aBody)].filter((n) => bn.has(n));
+  return both.length >= 2 && both.some((n) => n.length >= 6);
 }

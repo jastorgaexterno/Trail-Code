@@ -74,3 +74,15 @@ test("a long headline ends at its last clause break, or at a whole word, never m
   assert.ok(words.length <= 100 && /^(word )+word…$/.test(words), words);
   assert.equal(plainHeadline("Adapters move out of core into separate packages in v5, so new runtime adapters ship standalone"), "Adapters move out of core into separate packages in v5, so new runtime adapters ship standalone");
 });
+
+test("sameLearning also matches two learnings whose bodies name the same code, in other words", () => {
+  const pr = { title: "Don't reuse one CSS class name across unrelated pages; it caused overlap and cut-off bugs", body: "- In the code: Renamed: sign-in picture cards `note` → `bnote`; chat bubble `me` → `.dc-msg.you` (the account button styles `me` as a 32px row)." };
+  const past = { title: "Reuse of a short global style name cut off chat messages", body: "- In the code: `.me` in web/src/styles/app.css is the account button. The chat bubble is `.dc-msg.you` in journey.css." };
+  assert.equal(sameLearning(pr.title, past.title), false, "the headlines alone don't say it");
+  assert.equal(sameLearning(pr.title, past.title, pr.body, past.body), true);
+  assert.equal(
+    sameLearning("Keep one home page for every team", "The first page offers only two jobs", "- In the code: `web/src/app/home/page.tsx` and `me`.", "- In the code: `web/src/app/start/page.tsx` and `me`."),
+    false,
+    "one short shared name is not enough",
+  );
+});

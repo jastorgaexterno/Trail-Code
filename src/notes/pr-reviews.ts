@@ -539,7 +539,7 @@ export async function finishReviewRead(
   const kept = chosen ?? [];
   const saved = kept.length ? saveReviewFindings(repo, kept) : [];
   const outcome = chosen === null ? "cancelled" : findings.length ? "found" : result.findings.length ? "none_anchored" : (result.reason ?? "none_found");
-  if (outcome === "found" || outcome === "none_found" || outcome === "none_anchored") writeJsonAtomic(readMark(repo), { at: Date.now(), model: result.model, saved: saved.length }, true);
+  if (outcome === "found" || outcome === "none_found" || outcome === "none_anchored") writeJsonAtomic(readMark(repo), { at: Date.now(), model: result.model, saved: saved.length, ms: result.durationMs, ...(result.costUsd === undefined ? {} : { costUsd: result.costUsd }) }, true);
   track(
     "cold_start",
     {

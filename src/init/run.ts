@@ -100,7 +100,8 @@ export function beginLookBack(repo: string, opts: { env?: NodeJS.ProcessEnv; pla
   if (reads.reviews) lines.push("· reading this repo's pull requests for what the team decided and ruled out");
   // The same rule starts the session read: it goes to the person's own Claude Code, on this machine.
   reads.sessions = reviews ? beginSessionRead(repo, env, { ...(agent ? { capMs: AGENT_CAP_MS } : {}), again: opts.again === true }) : null;
-  if (reads.sessions) lines.push('· reading what was decided in your past Claude sessions here, with your Claude Code on this laptop');
+  // One line for both reads of the sessions: the look-back's and what was decided in them.
+  if (reads.sessions) lines[0] = '· reading your past Claude Code sessions here for what was decided, with your Claude Code on this laptop (about a minute)';
   return { reads, lines };
 }
 
@@ -253,7 +254,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
   const anchored = reviewResult ? anchoredReviews(repo, reviewResult.findings) : [];
   const done = new Set([...record.closed, ...record.runs.flatMap((r) => r.kept)]);
   // The same learning from the PRs and from past sessions is offered once: the PR one, which says where it came from.
-  const prTitles = anchored.map((f) => f.title);
+  const prTitles = anchored.map((f) => ({ title: f.title, body: f.body }));
   const fromPast = sessionResult ? offeredSessions(repo, sessionResult.findings, prTitles) : [];
   const team = [...reviewItems(anchored, repoKey, done), ...sessionItems(fromPast, repoKey, done), ...memoryItems(reads.memory, repoKey)];
   const s = readSettings(env);
@@ -391,9 +392,9 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
   } else if (mode.yes && agent && list.length) {
     say(yesLine(list, true));
   }
-  // The look-back found nothing to keep: its found line and why, as with no team rows.
+  // The look-back found nothing to keep: its found line and why, but not "nothing to keep", beside the team rows it did find.
   if (looked && !items.length) {
-    for (const l of relayLines([], facts)) say(l);
+    for (const l of relayLines([], facts)) if (l !== INIT_COPY.nothing) say(l);
     if (!lb.errors.length) markLookedBack(repo, now, env);
   }
   const fromTeam = await keepTeam('auto');

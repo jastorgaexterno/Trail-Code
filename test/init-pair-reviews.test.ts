@@ -249,6 +249,7 @@ test("init --pair reads past sessions and the PRs together: both learnings saved
     assert.deepEqual(titlesIn(repo), ["API handlers report database failures instead of hiding them", "Orders are read fresh from the database, not cached"]);
     assert.match(r.err, /· found 1 learning in your past sessions, e\.g\. "Orders are read fresh from the database, not cached"/);
     assert.match(r.err, /· found 1 learning in this repo's pull requests/);
+    assert.doesNotMatch(r.err, /nothing to keep from your past sessions/, "no line saying nothing was found beside what was");
     const decisions = trail.progress().map((p) => (p.phases as PhaseRow[] | undefined)?.find((ph) => ph.id === "decisions")).filter(Boolean).at(-1);
     assert.equal(decisions?.count, "1 learning", "the page counts what the session read found");
     const saved = readFileSync(join(repo, ".trail", "learnings", readdirSync(join(repo, ".trail", "learnings")).find((f) => f.includes("orders-are-read"))!), "utf8");

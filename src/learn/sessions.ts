@@ -20,7 +20,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { BAR, LEARNING_SCHEMA, learningBody, sameLearning, verifyLearnings, type Learning } from "./bar.js";
 import { callClaude, claudeBin, COLD_START_MODEL, norm, scrub, type ClaudeFailure, type QuoteSource } from "../notes/cold-start.js";
-import { discoverSessions, type PastSession } from "../init/sessions.js";
+import { type PastSession } from "../init/sessions.js";
+import { discoverOffThread } from "../init/discover-worker.js";
 import { eachLine } from "../init/transcript.js";
 import { typedText } from "../trace/claude.js";
 import { countBucket, durationBucket } from "../telemetry/contract.js";
@@ -156,13 +157,13 @@ export interface SessionResult {
  */
 export async function findSessionLearnings(
   repo: string,
-  opts: { env?: NodeJS.ProcessEnv; capMs?: number; since?: string; model?: string; full?: boolean; found?: PastSession[] } = {},
+  opts: { env?: NodeJS.ProcessEnv; capMs?: number; since?: string; model?: string; full?: boolean } = {},
 ): Promise<SessionResult> {
   const env = opts.env ?? process.env;
   const model = opts.model ?? COLD_START_MODEL;
   const started = Date.now();
   const left = () => (opts.capMs === undefined ? Infinity : opts.capMs - (Date.now() - started));
-  const found = opts.found ?? pastSessions(repo, env);
+  const found = await pastSessions(repo, env);
   const newest = found.reduce<string | undefined>((m, s) => (!m || s.at > m ? s.at : m), undefined);
   const sessions = opts.since ? found.filter((s) => s.at > opts.since!) : found;
   const base = { sessions: sessions.length, read: 0, findings: [] as Learning[], model, ...(newest ? { newest } : {}) };
@@ -184,9 +185,10 @@ export async function findSessionLearnings(
   return { ...base, read: read.length, findings, durationMs, costUsd: asked.costUsd, reason: findings.length ? undefined : "none_found" };
 }
 
-function pastSessions(repo: string, env: NodeJS.ProcessEnv): PastSession[] {
+/** The repo's past sessions, found in a worker so init's first lines and its spinner don't wait on the transcripts. */
+async function pastSessions(repo: string, env: NodeJS.ProcessEnv): Promise<PastSession[]> {
   try {
-    return discoverSessions(repo, env.HOME || homedir(), new Date(), env).sessions;
+    return (await discoverOffThread(repo, env.HOME || homedir(), env)).sessions;
   } catch {
     return [];
   }
@@ -209,9 +211,9 @@ export interface SessionRead {
 
 /**
  * Start reading the repo's past sessions, for `trail init` to collect at its
- * end; null when there are none to read (none here, or none since the last
- * read with `again`), they were read on this machine before (unless `again`),
- * or TRAIL_NO_FETCH is set.
+ * end; null when they were read on this machine before (unless `again`,
+ * which reads the sessions since), or TRAIL_NO_FETCH is set. A read that
+ * finds no sessions leaves no mark, so a later init reads them.
  */
 export function beginSessionRead(repo: string, env: NodeJS.ProcessEnv = process.env, opts: { capMs?: number; again?: boolean } = {}): SessionRead | null {
   try {
@@ -219,9 +221,7 @@ export function beginSessionRead(repo: string, env: NodeJS.ProcessEnv = process.
     const mark = readJson<{ at?: number; newest?: string }>(readMark(repo));
     if (mark?.at && !opts.again) return null;
     const since = mark?.at ? mark.newest : undefined;
-    const found = pastSessions(repo, env);
-    if (!found.some((s) => !since || s.at > since)) return null;
-    const read: SessionRead = { started: Date.now(), done: false, result: findSessionLearnings(repo, { env, found, ...(opts.capMs === undefined ? {} : { capMs: opts.capMs }), ...(since ? { since } : {}) }) };
+    const read: SessionRead = { started: Date.now(), done: false, result: findSessionLearnings(repo, { env, ...(opts.capMs === undefined ? {} : { capMs: opts.capMs }), ...(since ? { since } : {}) }) };
     void read.result.then(() => (read.done = true));
     return read;
   } catch {
@@ -234,12 +234,12 @@ export function beginSessionRead(repo: string, env: NodeJS.ProcessEnv = process.
  * learning (`also`: ones offered beside them, like the PR read's), each with
  * the code it names that exists now as `touches`.
  */
-export function offeredSessions(repo: string, findings: Learning[], also: string[] = []): Array<Learning & { touches: string[] }> {
+export function offeredSessions(repo: string, findings: Learning[], also: Array<{ title: string; body: string }> = []): Array<Learning & { touches: string[] }> {
   const known = knownText(repo);
   const out: Array<Learning & { touches: string[] }> = [];
   for (const l of findings) {
     const body = learningBody(l, "");
-    if (alreadySaid(known, l.headline, body) || also.some((t) => sameLearning(t, l.headline))) continue;
+    if (alreadySaid(known, l.headline, body) || also.some((a) => sameLearning(a.title, l.headline, a.body, body))) continue;
     out.push({ ...l, touches: codeAnchors(repo, `${l.headline}\n${body}`) });
   }
   return out;
@@ -266,7 +266,7 @@ export async function finishSessionRead(
   repo: string,
   read: SessionRead,
   keep?: (findings: Array<Learning & { touches: string[] }>) => Promise<Array<Learning & { touches: string[] }> | null>,
-  also: string[] = [],
+  also: Array<{ title: string; body: string }> = [],
 ): Promise<{ result: SessionResult; saved: Note[]; kept: Learning[]; offered: number; cancelled: boolean }> {
   const result = await read.result;
   const offered = offeredSessions(repo, result.findings, also);
@@ -274,8 +274,8 @@ export async function finishSessionRead(
   const kept = chosen ?? [];
   const saved = kept.length ? saveSessionLearnings(repo, kept) : [];
   const outcome = chosen === null ? "cancelled" : offered.length ? "found" : (result.reason ?? "none_found");
-  if (chosen !== null && result.reason !== "no_claude" && result.reason !== "failed")
-    writeJsonAtomic(readMark(repo), { at: Date.now(), model: result.model, saved: saved.length, ...(result.newest ? { newest: result.newest } : {}) }, true);
+  if (chosen !== null && result.reason !== "no_claude" && result.reason !== "failed" && result.reason !== "no_sessions")
+    writeJsonAtomic(readMark(repo), { at: Date.now(), model: result.model, saved: saved.length, ms: result.durationMs, ...(result.costUsd === undefined ? {} : { costUsd: result.costUsd }), ...(result.newest ? { newest: result.newest } : {}) }, true);
   track(
     "cold_start",
     {

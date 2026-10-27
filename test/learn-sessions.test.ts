@@ -105,7 +105,7 @@ test("a big transcript is read in pieces, not loaded whole", () => {
 });
 
 function readWith(findings: SessionResult["findings"]): SessionRead {
-  const result: SessionResult = { sessions: 3, read: 3, findings, durationMs: 10, model: "claude-sonnet-5-5", newest: "2026-10-20T10:00:00Z" };
+  const result: SessionResult = { sessions: 3, read: 3, findings, durationMs: 10, model: "claude-sonnet-5-5", newest: "2026-10-20T10:00:00Z", costUsd: 0.12 };
   return { started: Date.now(), done: true, result: Promise.resolve(result) };
 }
 
@@ -125,7 +125,9 @@ test("finishSessionRead saves each learning with its plain title, and the repo i
     assert.equal(saved[0]!.scope, "repo");
     assert.match(saved[0]!.body, /^## Decided\n- The owner reversed a read-first build\.\n- In the code: Every \/start page sends signed-out people to sign up\.\n\n_From past Claude sessions here, /);
     assert.equal(saved[0]!.src, "init-sessions");
-    assert.ok(existsSync(join(ensureRepoHome(repo).place.dir, "session-learnings.json")));
+    const mark = JSON.parse(readFileSync(join(ensureRepoHome(repo).place.dir, "session-learnings.json"), "utf8"));
+    assert.equal(mark.costUsd, 0.12, "what the read cost stays on this machine, beside when it ran");
+    assert.equal(mark.ms, 10);
     assert.equal(beginSessionRead(repo, { ...process.env }), null, "read once per repo");
   } finally {
     process.env.TRAIL_HOME = env.TRAIL_HOME;
@@ -139,10 +141,23 @@ test("TRAIL_NO_FETCH turns the session read off", () => {
   assert.equal(beginSessionRead(repo, { ...process.env, TRAIL_NO_FETCH: "1" }), null);
 });
 
-test("with no past sessions here, the session read doesn't start, so init says nothing about it", () => {
+test("with no past sessions here the read finds none and leaves no mark, so the next init reads again", async () => {
   const home = mkdtempSync(join(tmpdir(), "sess-none-"));
   mkdirSync(join(home, ".claude", "projects"), { recursive: true });
-  const repo = tmpRepo("sess-none");
-  spawnSync("git", ["init", "-q"], { cwd: repo });
-  assert.equal(beginSessionRead(repo, { ...process.env, HOME: home, TRAIL_HOME: join(home, ".trail") }), null);
+  const saved = process.env.TRAIL_HOME;
+  process.env.TRAIL_HOME = join(home, ".trail");
+  try {
+    const repo = tmpRepo("sess-none");
+    spawnSync("git", ["init", "-q"], { cwd: repo });
+    const env = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
+    const read = beginSessionRead(repo, env);
+    assert.ok(read, "the read starts at once; discovery runs off the main thread");
+    const { result, saved: kept } = await finishSessionRead(repo, read!);
+    assert.equal(result.reason, "no_sessions");
+    assert.equal(kept.length, 0);
+    assert.equal(existsSync(join(ensureRepoHome(repo).place.dir, "session-learnings.json")), false);
+    assert.ok(beginSessionRead(repo, env), "nothing was read, so the next init reads");
+  } finally {
+    process.env.TRAIL_HOME = saved;
+  }
 });
