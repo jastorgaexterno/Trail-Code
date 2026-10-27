@@ -72,7 +72,7 @@ import { registerSkillCommands } from "./skills/cli-skills.js";
 import { gateNote, namesRepoSymbol, symbolCandidates, trackedFiles } from "./notes/note-gate.js";
 import { recordLookup } from "./cloud/lookup-activity.js";
 import { clearPending, cloudLines, loginLink, sessionKey, WAIT_MS, waitForConnect } from "./cloud/nudge.js";
-import { addRepo, clearCloud, cloudEnabled, failPair, fetchMe, fetchTeam, isError, readCloud, serverUrl, trailUrl, useServer, writeCloud, type Cloud, type SetupFailure } from "./cloud/workspace.js";
+import { addRepo, clearCloud, cloudEnabled, cloudForRepo, cloudIn, failPair, fetchMe, fetchTeam, isError, readCloud, readClouds, sameWorkspace, serverUrl, trailUrl, useServer, writeCloud, type Cloud, type Me, type SetupFailure } from "./cloud/workspace.js";
 import {
   claimConnectCode,
   connectAgain,
@@ -2195,15 +2195,16 @@ grouped(program.command("uninstall"), GROUP.setup)
 /* -------------------------------------------------------------------------- */
 
 /**
- * `trail login`: connect this machine to a Trail workspace by hand. Normally
- * nobody runs it: Claude offers the same link once there's a learning to
- * share. Prints the link, opens it, and waits for the person to sign in and
- * add the repo they're in, then uploads its committed learnings. Other repos
- * are added one at a time afterwards (`trail workspace add`).
+ * `trail login`: link the repo you're in to a Trail workspace by hand.
+ * Normally nobody runs it: Claude offers the same link once there's a learning
+ * to share. Prints the link, opens it, and waits for the person to sign in and
+ * pick the workspace for the repo, then uploads its committed learnings. A
+ * machine already in a workspace links another repo the same way, to that
+ * workspace or another one.
  */
 function loginCommand(name = "login"): Command {
   return new Command(name)
-    .description("Connect this machine to a Trail workspace: sign in, add this repo, invite your team")
+    .description("Link this repo to a Trail workspace: sign in, pick the workspace, invite your team")
     .argument("[dir]", "the repo to add", ".")
     .option("--server <url>", "a self-hosted Trail, e.g. https://trail.acme.internal (default: Trail cloud, https://team.trailhq.com)")
     .action(async (dir: string, opts: { server?: string }) => {
@@ -2215,7 +2216,8 @@ function loginCommand(name = "login"): Command {
         process.exitCode = 1;
         return;
       }
-      const cloud = readCloud();
+      const here = workspaceRepo(repo);
+      const cloud = here.git ? cloudForRepo(here.key) : readCloud();
       if (cloud) {
         console.error(`✓ already connected to workspace ${cloud.workspace.name} · ${cloud.workspace.url}`);
         return;
@@ -2236,16 +2238,32 @@ function loginCommand(name = "login"): Command {
 
 function logoutCommand(name = "logout"): Command {
   return new Command(name)
-    .description("Disconnect this machine from its Trail workspace (learnings stay in your repos)")
-    .action(() => {
-      const cloud = readCloud();
+    .description("Disconnect this machine from its Trail workspaces (learnings stay in your repos)")
+    .option("--workspace <slug>", "disconnect only this workspace (trail workspace lists them)")
+    .action((opts: { workspace?: string }) => {
+      const all = readClouds();
+      if (opts.workspace !== undefined) {
+        const gone = all.find((c) => c.workspace.slug === opts.workspace);
+        if (!gone || !clearCloud(process.env, opts.workspace)) {
+          console.error(`✗ not connected to a workspace "${opts.workspace}" · ${cmd("graft workspace")} lists them`);
+          process.exitCode = 1;
+          return;
+        }
+        if (all.length === 1) {
+          clearPending();
+          removeBrainsServer(homedir());
+        }
+        console.error(`✓ disconnected from workspace ${gone.workspace.name} · learnings stay in your repos' .trail/`);
+        return;
+      }
       clearPending();
       removeBrainsServer(homedir());
       if (!clearCloud()) {
         console.error("· not connected to a workspace");
         return;
       }
-      console.error(`✓ disconnected from workspace ${cloud?.workspace.name ?? ""} · learnings stay in your repos' .trail/`.replace("  ", " "));
+      const names = all.map((c) => c.workspace.name).join(", ");
+      console.error(`✓ disconnected from workspace${all.length > 1 ? "s" : ""} ${names} · learnings stay in your repos' .trail/`.replace("  ", " "));
     });
 }
 
@@ -2257,49 +2275,66 @@ function workspaceRepo(repo: string): { key: string; name: string; checkout: str
 
 function workspaceCommand(name = "workspace"): Command {
   const ws = new Command(name)
-    .description("Your Trail workspace: its repos, the team page and the invite link")
+    .description("Your Trail workspaces: their repos, the team page and the invite link")
     .argument("[dir]", "repository root", ".")
     .option("--json", "output as JSON")
     .action(async (dir: string, opts: { json?: boolean }) => {
       const repo = resolve(dir);
-      const cloud = readCloud();
-      if (!cloud) {
+      const all = readClouds();
+      if (!all.length) {
         console.log("· not connected to a workspace");
         console.log(`· Claude offers a link once this repo has learnings, or run ${cmd("graft login")}`);
         return;
       }
-      const me = await fetchMe(cloud);
-      if (isError(me)) {
-        console.error(`✗ ${me.error}`);
-        process.exitCode = 1;
-        return;
-      }
-      // What the workspace has now, for every command that reads cloud.json.
-      writeCloud({ ...cloud, workspace: me.workspace, repos: me.repos.map((r) => r.key) });
-      if (opts.json) {
-        console.log(JSON.stringify(me, null, 2));
-        return;
-      }
-      console.log(`${me.workspace.name} · ${me.workspace.url}`);
-      console.log(`invite  ${me.workspace.invite_url}`);
-      console.log("");
       const here = workspaceRepo(repo);
-      const width = Math.max(...me.repos.map((r) => r.name.length), here.name.length) + 3;
-      for (const r of me.repos) {
-        const by = r.added_by ? ` · added by ${r.added_by}` : "";
-        console.log(`  ✓ ${r.name.padEnd(width)}${r.learnings} learning${r.learnings === 1 ? "" : "s"}${by}`);
+      const seen: Array<{ cloud: Cloud; me: Me }> = [];
+      for (const cloud of all) {
+        const me = await fetchMe(cloud);
+        if (isError(me)) {
+          console.error(`✗ ${all.length > 1 ? `${cloud.workspace.name}: ` : ""}${me.error}`);
+          process.exitCode = 1;
+          continue;
+        }
+        // What the workspace has now, for every command that reads cloud.json.
+        const fresh = { ...cloud, workspace: me.workspace, repos: me.repos.map((r) => r.key) };
+        writeCloud(fresh);
+        seen.push({ cloud: fresh, me });
       }
-      if (here.git && !me.repos.some((r) => r.key === here.key)) {
-        console.log(`  · ${here.name.padEnd(width)}not in the workspace · ${cmd("graft workspace add")} shares its learnings`);
+      if (!seen.length) return;
+      // The workspace this repo goes to, else the newest; every one when there are several.
+      const mine = here.git ? cloudIn(seen.map((x) => x.cloud), here.key) : null;
+      if (opts.json) {
+        const pick = seen.find((x) => mine && sameWorkspace(x.cloud, mine)) ?? seen[0];
+        console.log(JSON.stringify(seen.length > 1 ? { ...pick.me, workspaces: seen.map((x) => x.me.workspace) } : pick.me, null, 2));
+        return;
+      }
+      let width = here.name.length + 3;
+      seen.forEach(({ cloud, me }, i) => {
+        if (i > 0) console.log("");
+        console.log(`${me.workspace.name}${seen.length > 1 ? ` (${me.workspace.slug})` : ""} · ${me.workspace.url}`);
+        console.log(`invite  ${me.workspace.invite_url}`);
+        console.log("");
+        width = Math.max(...me.repos.map((r) => r.name.length), here.name.length) + 3;
+        for (const r of me.repos) {
+          const by = r.added_by ? ` · added by ${r.added_by}` : "";
+          // A repo in two workspaces goes to one from this machine: the newest link.
+          const elsewhere = seen.length > 1 && cloudIn(seen.map((x) => x.cloud), r.key) !== cloud ? " · goes to another workspace from here" : "";
+          console.log(`  ✓ ${r.name.padEnd(width)}${r.learnings} learning${r.learnings === 1 ? "" : "s"}${by}${elsewhere}`);
+        }
+      });
+      if (here.git && !mine) {
+        const where = seen.length > 1 ? "in any of your workspaces" : "in the workspace";
+        console.log(`  · ${here.name.padEnd(width)}not ${where} · ${cmd("graft workspace add")}${seen.length > 1 ? " --to <slug>" : ""} shares its learnings`);
       } else if (here.git) printLines(leftOutLines(here.checkout));
     });
   ws.command("add")
-    .description("Add this repo to your workspace and share its learnings")
+    .description("Add this repo to a workspace and share its learnings")
     .argument("[dir]", "repository root", ".")
-    .action(async (dir: string) => {
+    .option("--to <slug>", "the workspace, when this machine is in more than one")
+    .action(async (dir: string, opts: { to?: string }) => {
       const repo = resolve(dir);
-      const cloud = readCloud();
-      if (!cloud) {
+      const all = readClouds();
+      if (!all.length) {
         console.error(`✗ not connected to a workspace · run ${cmd("graft login")}`);
         process.exitCode = 1;
         return;
@@ -2307,6 +2342,20 @@ function workspaceCommand(name = "workspace"): Command {
       const here = workspaceRepo(repo);
       if (!here.git) {
         console.error("✗ not a git repository");
+        process.exitCode = 1;
+        return;
+      }
+      const cloud = opts.to !== undefined ? all.find((c) => c.workspace.slug === opts.to) : all.length === 1 ? all[0] : undefined;
+      if (!cloud) {
+        if (opts.to !== undefined) console.error(`✗ not connected to a workspace "${opts.to}" · ${cmd("graft workspace")} lists them`);
+        else console.error(`✗ this machine is in ${all.length} workspaces · pick one: ${cmd("graft workspace add")} --to <${all.map((c) => c.workspace.slug).join("|")}>`);
+        process.exitCode = 1;
+        return;
+      }
+      // One workspace per repo on this machine: moving it is a logout of the other first.
+      const now = cloudIn(all, here.key);
+      if (now && !sameWorkspace(now, cloud)) {
+        console.error(`✗ ${here.name} already goes to workspace ${now.workspace.name} · ${cmd("graft logout")} --workspace ${now.workspace.slug} first to send it to ${cloud.workspace.name}`);
         process.exitCode = 1;
         return;
       }
@@ -2372,13 +2421,14 @@ function teamCommand(name = "team"): Command {
     .action(async (dir: string, opts: { days: string; json?: boolean }) => {
       const repo = resolve(dir);
       const days = Math.max(1, Math.min(90, Number(opts.days) || 7));
-      const cloud = readCloud();
+      const here = workspaceRepo(repo);
+      // The workspace this repo goes to, else the newest one this machine is in.
+      const cloud = (here.git ? cloudForRepo(here.key) : null) ?? readCloud();
       if (!cloud) {
         localTeam(repo, days, opts.json === true);
         return;
       }
       maybeSyncInBackground(repo);
-      const here = workspaceRepo(repo);
       const t = await fetchTeam(cloud, { repo: cloud.repos.includes(here.key) ? here.key : undefined, days });
       if (isError(t)) {
         console.error(`✗ ${t.error}`);
@@ -2615,7 +2665,9 @@ function statusCommand(name = "status"): Command {
       const inRepo = all.filter((n) => n.scope === "repo" && !n.ref).length;
       const onBranches = all.filter((n) => n.ref).length;
       const personal = all.filter((n) => n.scope === "personal").length;
-      const cloud = readCloud();
+      const clouds = readClouds();
+      // The workspace this repo goes to, else the newest one this machine is in.
+      const cloud = cloudIn(clouds, repoPlace(repo).key) ?? clouds[0] ?? null;
       const shared = cloud ? inWorkspace(repo, cloud) : false;
       const saved = savedThisWeek(repo);
 
@@ -2652,7 +2704,7 @@ function statusCommand(name = "status"): Command {
       } else
         row(
           "workspace",
-          `${cloud.workspace.name} · ${cloud.repos.length} repo${cloud.repos.length === 1 ? "" : "s"}${shared ? ", this one included" : `, not this one (${cmd("graft workspace add")})`} · ${cloud.workspace.url}`,
+          `${cloud.workspace.name} · ${cloud.repos.length} repo${cloud.repos.length === 1 ? "" : "s"}${shared ? ", this one included" : `, not this one (${cmd("graft workspace add")})`} · ${cloud.workspace.url}${clouds.length > 1 ? ` · ${clouds.length - 1} more workspace${clouds.length === 2 ? "" : "s"} (${cmd("graft workspace")})` : ""}`,
         );
       row("this week", saved > 0 ? `~${shortCount(saved)} tokens saved` : "nothing saved yet");
       // Phase 2 (4.17, D137): Codex's trust of Trail's hooks, and why it keeps nothing new there yet.
