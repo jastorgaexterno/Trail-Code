@@ -34,7 +34,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "graft": "dist/bin/graft.js"
+    "graft": "dist/bin/graft.js",
+    "trail": "dist/bin/graft.js"
   },
   "files": [
     "dist",
