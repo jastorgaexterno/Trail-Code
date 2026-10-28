@@ -60,6 +60,12 @@ export interface WorkspaceV1 {
   version: 1;
   /** Immediate child dir names that are git repos, sorted. */
   children: string[];
+  /**
+   * Dirs to skip during auto-discovery. Edit this list to permanently exclude
+   * a repo from the workspace — `trail build` will preserve and respect it.
+   * Paths are relative to the workspace root (e.g. `"Trail-Code"`, `"SDK"`).
+   */
+  excludeFromDiscovery?: string[];
 }
 
 const WORKSPACE_FILE = "workspace.json";
@@ -76,18 +82,27 @@ export function readWorkspace(root: string, override?: string): WorkspaceV1 | nu
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<WorkspaceV1>;
     if (parsed.version !== 1 || !Array.isArray(parsed.children)) return null;
-    return { version: 1, children: parsed.children.map(String) };
+    return {
+      version: 1,
+      children: parsed.children.map(String),
+      excludeFromDiscovery: Array.isArray(parsed.excludeFromDiscovery)
+        ? parsed.excludeFromDiscovery.map(String)
+        : undefined,
+    };
   } catch {
     return null;
   }
 }
 
-/** Write the workspace index, sorting children for a stable, minimal git diff. */
+/** Write the workspace index, sorting children for a stable, minimal git diff.
+ * Preserves `excludeFromDiscovery` across rebuilds. */
 export function writeWorkspace(root: string, ws: WorkspaceV1, override?: string): string {
   const dir = contextDirFor(root, override);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, WORKSPACE_FILE);
   const sorted: WorkspaceV1 = { version: 1, children: [...ws.children].sort() };
+  if (ws.excludeFromDiscovery && ws.excludeFromDiscovery.length > 0)
+    sorted.excludeFromDiscovery = [...ws.excludeFromDiscovery].sort();
   writeFileSync(path, JSON.stringify(sorted, null, 2) + "\n");
   return path;
 }
@@ -714,13 +729,21 @@ export async function splitWorkspace(
   buildChild: (childDir: string, childName: string) => Promise<void>,
   onStart?: (info: { children: string[]; migrated: boolean }) => void,
 ): Promise<{ children: string[]; migrated: boolean }> {
-  const children = discoverWorkspaceChildren(root).slice().sort();
+  // Preserve user-configured exclusions across rebuilds.
+  const existing = readWorkspace(root, override);
+  const excluded = existing?.excludeFromDiscovery ?? [];
+  // Match exact name OR prefix (e.g. "Biometria" excludes "Biometria/frontend")
+  const isExcluded = (child: string) =>
+    excluded.some((e) => child === e || child.startsWith(`${e}/`));
+  const discovered = discoverWorkspaceChildren(root)
+    .filter((c) => !isExcluded(c))
+    .sort();
   const migrated = hasMegaGraph(root, override);
-  onStart?.({ children, migrated });
-  for (const child of children) await buildChild(join(root, child), child);
-  clearParentGraft(root, override); // drop the mega-graph/.cache/cards…
-  writeWorkspace(root, { version: 1, children }, override); // …leaving ONLY workspace.json
-  return { children, migrated };
+  onStart?.({ children: discovered, migrated });
+  for (const child of discovered) await buildChild(join(root, child), child);
+  clearParentGraft(root, override);
+  writeWorkspace(root, { version: 1, children: discovered, excludeFromDiscovery: existing?.excludeFromDiscovery }, override);
+  return { children: discovered, migrated };
 }
 
 export { formatGrepResult, zeroHitNote };
