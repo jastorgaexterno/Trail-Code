@@ -519,6 +519,7 @@ grouped(program.command("build"), GROUP.setup)
   )
   .option("--no-gitignore", "skip writing graft/ into .gitignore (same as GRAFT_NO_GITIGNORE=1)")
   .option("--no-ignore", "skip writing .ignore for ripgrep re-admit (same as GRAFT_NO_IGNORE=1)")
+  .option("--semantic", "after building the graph, embed all nodes for semantic search (requires ~87 MB model on first run)")
   .action(async (
     dir: string,
     opts: {
@@ -537,6 +538,7 @@ grouped(program.command("build"), GROUP.setup)
       followNestedRepos?: boolean;
       gitignore?: boolean;
       ignore?: boolean;
+      semantic?: boolean;
     },
     command: Command,
   ) => {
@@ -729,6 +731,21 @@ grouped(program.command("build"), GROUP.setup)
       console.log(`  ${rel}/ is a local cache: add it to your gitignore if you want it untracked.`);
     } else {
       console.log(`  ${rel}/ is git-ignored (added automatically), a local cache; teammates run \`${cmd("graft build")}\` to get their own.`);
+    }
+
+    // --semantic: embed all nodes for semantic search after a successful build.
+    if (opts.semantic) {
+      const { embedNodes: doEmbed } = await import('./ask/semantic.js');
+      const { join: pathJoin } = await import('node:path');
+      const { contextDirFor } = await import('./context/node-file.js');
+      const { loadGraphCached } = await import('./graph/load.js');
+      const contextDir = contextDirFor(buildRoot, program.opts<GlobalOpts>().dir);
+      const loaded = loadGraphCached(contextDir);
+      if (loaded) {
+        const dbPath = pathJoin(contextDir, '.cache', 'embeddings.db');
+        await doEmbed(loaded.nodes, dbPath);
+        process.stderr.write('[semantic] Embedding complete\n');
+      }
     }
 
     // #127: a --deep run whose LLM calls failed used to print the same success

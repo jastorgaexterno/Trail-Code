@@ -8,6 +8,7 @@
 import { createRequire } from 'node:module';
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { NodeV1 } from '../graph/types.js';
 
 // Use createRequire so CJS native modules load cleanly from this ESM file.
@@ -49,7 +50,22 @@ function vecToBuffer(arr: Float32Array): Buffer {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _extractor: any = null;
 
+// Test-only override: replaces the real pipeline with a fake embedder.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _testEmbedder: ((text: string) => Float32Array) | null = null;
+
+/**
+ * Inject a fake embedder for tests — bypasses the 87 MB model download.
+ * Call with `null` to restore the real pipeline.
+ */
+export function _setEmbedderForTest(fn: ((text: string) => Float32Array) | null): void {
+  _testEmbedder = fn;
+  // Also reset the cached extractor so it re-evaluates on the next call.
+  _extractor = null;
+}
+
 async function getExtractor() {
+  if (_testEmbedder) return _testEmbedder;
   if (_extractor) return _extractor;
   // Dynamic import keeps @huggingface/transformers tree-shakeable and avoids
   // loading ONNX during non-semantic code paths.
@@ -67,9 +83,14 @@ async function embedTexts(texts: string[]): Promise<Float32Array[]> {
   const extractor = await getExtractor();
   const results: Float32Array[] = [];
   for (const text of texts) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const output: any = await extractor(text, { pooling: 'mean', normalize: false });
-    results.push(normalize(output.data as Float32Array));
+    if (_testEmbedder) {
+      // Test path: call the fake embedder directly and normalize.
+      results.push(normalize((_testEmbedder)(text)));
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const output: any = await (extractor as any)(text, { pooling: 'mean', normalize: false });
+      results.push(normalize(output.data as Float32Array));
+    }
   }
   return results;
 }
@@ -99,7 +120,17 @@ function initSchema(db: any): void {
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS vss_nodes
     USING vec0(embedding float[384]);
+    CREATE TABLE IF NOT EXISTS embed_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
+}
+
+/** Compute a stable SHA-256 hash over all node IDs (sorted). */
+function graphHash(nodes: NodeV1[]): string {
+  const sorted = nodes.map(n => n.id).sort().join(',');
+  return createHash('sha256').update(sorted).digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -118,19 +149,34 @@ export async function embedNodes(nodes: NodeV1[], dbPath: string): Promise<void>
   const db = openDb(dbPath);
   initSchema(db);
 
-  const { c } = db.prepare('SELECT COUNT(*) AS c FROM embed_nodes').get() as { c: number };
-  if (c > 0) {
-    process.stderr.write(`[semantic] ${c} embeddings already in DB, skipping re-embed\n`);
+  const currentHash = graphHash(nodes);
+
+  const stored = db.prepare(
+    "SELECT value FROM embed_meta WHERE key = 'graph_hash'"
+  ).get() as { value: string } | undefined;
+
+  if (stored?.value === currentHash) {
+    const { c } = db.prepare('SELECT COUNT(*) AS c FROM embed_nodes').get() as { c: number };
+    process.stderr.write(`[semantic] ${c} embeddings already in DB, fresh (hash match) — skipping re-embed\n`);
     db.close();
     return;
   }
+
+  // Hash changed (or first run) → wipe existing data and re-embed.
+  if (stored !== undefined) {
+    process.stderr.write(`[semantic] graph changed (hash changed), re-embedding ${nodes.length} nodes…\n`);
+  } else {
+    process.stderr.write(`[semantic] Embedding ${nodes.length} nodes (all-MiniLM-L6-v2)…\n`);
+  }
+
+  db.exec('DELETE FROM embed_nodes');
+  db.exec('DELETE FROM vss_nodes');
 
   // Build one text per node: id + signature + body_text (space-joined, nulls skipped).
   const texts = nodes.map(n =>
     [n.id, n.signature ?? '', n.body_text ?? ''].filter(Boolean).join(' ')
   );
 
-  process.stderr.write(`[semantic] Embedding ${nodes.length} nodes (all-MiniLM-L6-v2)…\n`);
   const vecs = await embedTexts(texts);
 
   const insertMeta = db.prepare(
@@ -152,6 +198,11 @@ export async function embedNodes(nodes: NodeV1[], dbPath: string): Promise<void>
     }
   });
   batch();
+
+  // Upsert the new hash.
+  db.prepare(
+    "INSERT INTO embed_meta (key, value) VALUES ('graph_hash', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(currentHash);
 
   process.stderr.write(`[semantic] Done — ${nodes.length} nodes stored at ${dbPath}\n`);
   db.close();

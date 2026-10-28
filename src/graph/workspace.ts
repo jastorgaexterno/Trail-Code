@@ -52,6 +52,7 @@ import { grepGraph, type GrepGroup, type GrepResult } from "../search/grep.js";
 import { formatGrepResult, zeroHitNote } from "../search/grep-cli.js";
 import { withSavings, type Savings } from "../context/savings.js";
 import { cmd } from "../brand.js";
+import { searchSemantic } from "../ask/semantic.js";
 
 /** The parent index written to `<parent>/graft/workspace.json`. Nodes/edges
  * never live at the parent — they live in each child's own `graft/`. */
@@ -723,3 +724,59 @@ export async function splitWorkspace(
 }
 
 export { formatGrepResult, zeroHitNote };
+
+/**
+ * Federated semantic search across all workspace children.
+ * For each child, queries that child's embeddings DB and prefixes hits with
+ * `[child/]`. All hits are merged, sorted by score desc, top `limit` returned.
+ */
+export async function federateSemantic(
+  root: string,
+  override: string | undefined,
+  query: string,
+  limit: number,
+): Promise<{ text: string; isError: boolean }> {
+  const wg = loadWorkspaceGraphs(root, override);
+
+  interface Hit {
+    child: string;
+    node_id: string;
+    file_path: string;
+    symbol: string;
+    score: number;
+    snippet: string;
+  }
+
+  const allHits: Hit[] = [];
+
+  for (const { child } of wg.loaded) {
+    const dbPath = join(root, child, 'graft', '.cache', 'embeddings.db');
+    try {
+      const hits = await searchSemantic(query, dbPath, limit * 2);
+      for (const h of hits) {
+        allHits.push({
+          child,
+          node_id: h.node_id,
+          file_path: `[${child}/]${h.file_path}`,
+          symbol: h.symbol,
+          score: h.score,
+          snippet: h.snippet,
+        });
+      }
+    } catch {
+      // Child has no embeddings yet — skip silently.
+    }
+  }
+
+  if (allHits.length === 0) {
+    return { text: 'no semantic matches found across workspace children', isError: false };
+  }
+
+  allHits.sort((a, b) => b.score - a.score);
+  const top = allHits.slice(0, limit);
+
+  const lines = top.map((h, i) =>
+    `${i + 1}. ${h.file_path} · ${h.symbol}  (score: ${h.score})\n   ${h.snippet}`
+  );
+  return { text: lines.join('\n\n'), isError: false };
+}

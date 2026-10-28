@@ -23,6 +23,7 @@ import {
   federateCheck,
   federateGrep,
   federateMap,
+  federateSemantic,
   readWorkspace,
 } from '../graph/workspace.js';
 import type { NodeV1 } from '../graph/types.js';
@@ -210,6 +211,13 @@ async function callWorkspaceTool(
     case 'graft_check_freshness': {
       const { text } = await federateCheck(root, dirOverride);
       return { text, isError: false };
+    }
+    case 'graft_search_semantic': {
+      const query = String(args.query ?? '');
+      if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
+      const limit = typeof args.limit === 'number' ? args.limit : 5;
+      const { text, isError } = await federateSemantic(root, dirOverride, query, limit);
+      return { text, isError };
     }
     default:
       return null;
