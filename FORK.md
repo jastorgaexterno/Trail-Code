@@ -41,9 +41,9 @@ Fixes [#702](https://github.com/trailhq/Trail-Code/issues/702) — `grepGraph` w
 ```bash
 git clone https://github.com/jastorgaexterno/Trail-Code
 cd Trail-Code
-npm install --ignore-scripts   # deps only — skips tree-sitter-kotlin native build
-npm run build                  # compile TypeScript → dist/ (required before install)
-npm install -g . --ignore-scripts  # register trail and graft binaries globally
+npm install --ignore-scripts   # skips tree-sitter-kotlin native C++ build (no Visual Studio needed)
+npm run build                  # compile TypeScript → dist/
+npm install -g .               # register trail and graft binaries globally
 ```
 
 Verify:
