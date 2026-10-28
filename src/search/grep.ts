@@ -96,17 +96,31 @@ interface SymbolSpan {
   end: number;
 }
 
-/** The file's symbol nodes, sorted ascending by span start — the order
- * `enclosingSymbol` scans in to find the innermost containing span. */
-function symbolsOf(graph: GraphV1, path: string): SymbolSpan[] {
-  const out: SymbolSpan[] = [];
+/** Pre-built index: graph → (path → SymbolSpan[]). WeakMap so it drops
+ * automatically when the graph object is replaced on reload. */
+const _symbolsIndex = new WeakMap<GraphV1, Map<string, SymbolSpan[]>>();
+
+function _buildSymbolsIndex(graph: GraphV1): Map<string, SymbolSpan[]> {
+  const idx = new Map<string, SymbolSpan[]>();
   for (const n of graph.nodes) {
-    if (n.kind === "file" || n.path !== path) continue;
+    if (n.kind === "file") continue;
     const b = spanBounds(n.span);
-    if (b) out.push({ node: n, start: b.start, end: b.end });
+    if (!b) continue;
+    let bucket = idx.get(n.path);
+    if (!bucket) { bucket = []; idx.set(n.path, bucket); }
+    bucket.push({ node: n, start: b.start, end: b.end });
   }
-  out.sort((a, b) => a.start - b.start);
-  return out;
+  for (const bucket of idx.values()) bucket.sort((a, b) => a.start - b.start);
+  return idx;
+}
+
+/** The file's symbol nodes, sorted ascending by span start — the order
+ * `enclosingSymbol` scans in to find the innermost containing span.
+ * Index is built once per graph instance (O(nodes)), then O(1) per lookup. */
+function symbolsOf(graph: GraphV1, path: string): SymbolSpan[] {
+  let idx = _symbolsIndex.get(graph);
+  if (!idx) { idx = _buildSymbolsIndex(graph); _symbolsIndex.set(graph, idx); }
+  return idx.get(path) ?? [];
 }
 
 /** Innermost symbol containing `line`: among spans that contain it, the one
