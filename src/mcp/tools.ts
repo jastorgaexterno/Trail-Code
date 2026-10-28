@@ -365,7 +365,9 @@ async function callSingleTool(
         await embedNodes(w.nodes, dbPath);
         const hits = await searchSemantic(query, dbPath, limit);
         if (hits.length === 0) return { text: 'no semantic matches found', isError: false };
-        const lines = hits.map((h, i) =>
+        const filtered = hits.filter(h => h.score > 0.05);
+        if (filtered.length === 0) return { text: 'no semantic matches found above threshold', isError: false };
+        const lines = filtered.map((h, i) =>
           `${i + 1}. ${h.file_path} · ${h.symbol}  (score: ${h.score})\n   ${h.snippet}`
         );
         return { text: lines.join('\n\n'), isError: false };

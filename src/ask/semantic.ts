@@ -74,7 +74,7 @@ async function getExtractor() {
   // survives npm ci / reinstalls (matches Spike 001 recommendation).
   const home = process.env['USERPROFILE'] ?? process.env['HOME'] ?? '.';
   env.cacheDir = `${home}/.cache/huggingface/transformers`;
-  _extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+  _extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'fp32' });
   return _extractor;
 }
 

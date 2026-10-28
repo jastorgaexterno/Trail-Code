@@ -73,7 +73,16 @@ hotspots, straight from the wiring graph.
   `map` alone is the answer: read the hub cards it names; do NOT then skeleton
   or ask your way through every subsystem it lists. `--max-dirs N` widens it.
 
-### 6 · Lifecycle: `graft build` / `graft check`
+### 6 · `graft_search_semantic` / `trail search --semantic`: meaning-based search
+
+Semantic (embedding-based) search — finds nodes by **concept**, not keywords. Use when you don't know the symbol name and `graft ask` returns weak results.
+
+- **Use it when** you need "where is the retry logic?", "what handles session expiry?", or any query where the code uses different words than you do.
+- Requires `trail build --semantic` to have been run at least once (builds a local vector index, ~87 MB model on first run). Subsequent calls are fast.
+- Returns ranked hits with cosine similarity scores.
+- **Do not use** when you already know the symbol name — `graft grep` is faster.
+
+### 7 · Lifecycle: `graft build` / `graft check`
 Every tool above refreshes the graph itself before answering, so what those tools
 return always describes the code as it is right now — including edits you just made
 and have not committed. You do **not** need to run `build` after editing.

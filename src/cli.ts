@@ -653,6 +653,26 @@ grouped(program.command("build"), GROUP.setup)
         followNestedRepos: followNestedReposWasExplicit ? opts.followNestedRepos : undefined,
         packageName: readPackageName(import.meta.url),
       });
+      // --semantic: embed each child repo after workspace build.
+      if (opts.semantic) {
+        const { embedNodes: doEmbedWs } = await import('./ask/semantic.js');
+        const { join: pathJoinWs } = await import('node:path');
+        const { contextDirFor: ctxDirForWs } = await import('./context/node-file.js');
+        const { loadGraphCached: loadGraphWs } = await import('./graph/load.js');
+        const ws = readWorkspace(buildRoot, buildGlobalDir);
+        if (ws) {
+          for (const child of ws.children) {
+            const childRoot = pathJoinWs(buildRoot, child);
+            const childCtx = ctxDirForWs(childRoot);
+            const loaded = loadGraphWs(childCtx);
+            if (loaded) {
+              const dbPath = pathJoinWs(childCtx, '.cache', 'embeddings.db');
+              await doEmbedWs(loaded.nodes, dbPath);
+            }
+          }
+          process.stderr.write('[semantic] Workspace embedding complete\n');
+        }
+      }
       return;
     }
 
