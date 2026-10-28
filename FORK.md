@@ -8,14 +8,6 @@ This is a fork of [trailhq/Trail-Code](https://github.com/trailhq/Trail-Code) (b
 
 Find code by **meaning**, not just keywords. When `graft ask` returns weak results because the code uses different terms than your query, semantic search bridges the gap.
 
-```bash
-# Build the vector index (one-time, ~87 MB model on first run)
-trail build --semantic
-
-# Query via MCP tool
-# graft_search_semantic: { query: "session expiry handling", limit: 5 }
-```
-
 **How it works:** after `trail build --semantic`, each parsed symbol is embedded with `all-MiniLM-L6-v2` (local ONNX, no API key, no network) and stored in `graft/.cache/embeddings.db`. The MCP tool embeds your query and returns the closest symbols by cosine similarity.
 
 **Workspace-aware:** works across multi-repo workspaces — results are labeled `[repo/]`.
@@ -35,22 +27,83 @@ Fixes [#702](https://github.com/trailhq/Trail-Code/issues/702) — `grepGraph` w
 | grep performance | O(files×nodes) | O(nodes) |
 | Extra deps | — | `@huggingface/transformers`, `better-sqlite3`, `sqlite-vec` |
 
-## Installing
+---
 
-```bash
-git clone https://github.com/jastorgaexterno/Trail-Code
-cd Trail-Code
-npm install --ignore-scripts  # install deps (skips tree-sitter-kotlin native build)
-npm run build                  # compile TypeScript → dist/
-npm install -g . --ignore-scripts  # install binaries (trail, graft)
-```
+## Setup
 
-> **Note:** if you have `@trailhq/trail-code` installed globally, uninstall it first to avoid binary conflicts:
+### 1 — Install the fork
+
+> **Note:** uninstall the upstream first if you have it, to avoid binary conflicts.
 > ```bash
 > npm uninstall -g @trailhq/trail-code
 > ```
 
-## Upstream PR
+```bash
+git clone https://github.com/jastorgaexterno/Trail-Code
+cd Trail-Code
+npm install --ignore-scripts   # deps only — skips tree-sitter-kotlin native build
+npm run build                  # compile TypeScript → dist/ (required before install)
+npm install -g . --ignore-scripts  # register trail and graft binaries globally
+```
 
-- Grep fix: [trailhq/Trail-Code#713](https://github.com/trailhq/Trail-Code/pull/713)
+Verify:
+```bash
+trail --version   # should print 0.28.0-semantic.1
+trail build --help | grep semantic   # should show --semantic flag
+```
+
+### 2 — Build the semantic index
+
+Run this once per repo (or workspace). The first run downloads the embedding model (~87 MB, cached at `~/.cache/huggingface/transformers/`).
+
+```bash
+# Single repo
+trail build --semantic /path/to/your/repo
+
+# Multi-repo workspace (folder with multiple git repos inside)
+trail build --semantic /path/to/your/workspace
+```
+
+Subsequent runs are fast — the index is hash-checked and only re-embeds when the code changes.
+
+### 3 — Wire into Hermes
+
+Add to `~/.hermes/config.yaml` under `mcp_servers:`:
+
+```yaml
+mcp_servers:
+  trail:
+    command: trail
+    args:
+      - mcp
+      - /path/to/your/workspace   # e.g. C:/Users/jastorga/Desarrollo/default-core
+    env:
+      PYTHONUTF8: "1"
+    enabled: true
+```
+
+After restarting Hermes, the following tools are available:
+- `graft_find_code` — ranked lexical search
+- `graft_trace_calls` — call graph traversal
+- `graft_search_semantic` — **semantic vector search** ← new in this fork
+- `graft_find_all`, `graft_file_api`, `graft_repo_map`, `graft_check_freshness`
+
+### 4 — Use it
+
+```
+graft_search_semantic: { query: "session expiry handling", limit: 5 }
+graft_search_semantic: { query: "manejo de errores de red", limit: 3 }
+```
+
+Use `graft_search_semantic` when:
+- `graft_find_code` returns weak results because the code uses different terms
+- You're searching by concept without knowing the symbol name
+
+Use `graft_find_code` when you already know part of the name — it's faster.
+
+---
+
+## Upstream PRs
+
+- Grep O(n) fix: [trailhq/Trail-Code#713](https://github.com/trailhq/Trail-Code/pull/713)
 - Semantic search feature request: [trailhq/Trail-Code#712](https://github.com/trailhq/Trail-Code/issues/712)
