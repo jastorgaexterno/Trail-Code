@@ -1,0 +1,10 @@
+{
+  "name": "spike-002-sqlite-vec",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Spike: sqlite-vec on Node.js 26 Windows — float32 vectors + cosine similarity",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "sqlite-vec": "^0.1.9"
+  }
+}

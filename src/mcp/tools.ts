@@ -26,6 +26,8 @@ import {
   readWorkspace,
 } from '../graph/workspace.js';
 import type { NodeV1 } from '../graph/types.js';
+import { join } from 'node:path';
+import { embedNodes, searchSemantic } from '../ask/semantic.js';
 import { recordLookup } from '../cloud/lookup-activity.js';
 import { canonicalToolName } from './tool-names.js';
 import { cmd } from '../brand.js';
@@ -124,6 +126,19 @@ export const TOOLS: ToolDef[] = [
       properties: {
         max_dirs: { type: 'number', description: 'max directory entries shown, rest counted into dropped (default 16)' },
       },
+    },
+  },
+  {
+    name: 'graft_search_semantic',
+    description:
+      'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. Embeds the query with all-MiniLM-L6-v2 and returns top-K nodes ranked by cosine similarity. Builds the vector index on first call (may be slow); subsequent calls are fast.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'plain-language description of what you are looking for' },
+        limit: { type: 'number', description: 'max results (default 5)' },
+      },
+      required: ['query'],
     },
   },
 ];
@@ -329,6 +344,23 @@ async function callSingleTool(
         const maxDirs = typeof args.max_dirs === 'number' && Number.isFinite(args.max_dirs) && args.max_dirs > 0 ? args.max_dirs : undefined;
         const map = buildRepoMap(w, { maxDirs });
         return { text: formatRepoMap(map), isError: false };
+      }
+      case 'graft_search_semantic': {
+        const query = String(args.query ?? '');
+        if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
+        const limit = typeof args.limit === 'number' ? args.limit : 5;
+        const contextDir = contextDirFor(root, dirOverride);
+        const w = loadGraphCached(contextDir);
+        if (!w) return { text: noGraph(), isError: true };
+        const dbPath = join(contextDir, '.cache', 'embeddings.db');
+        // Idempotent: skips re-embed if DB already populated.
+        await embedNodes(w.nodes, dbPath);
+        const hits = await searchSemantic(query, dbPath, limit);
+        if (hits.length === 0) return { text: 'no semantic matches found', isError: false };
+        const lines = hits.map((h, i) =>
+          `${i + 1}. ${h.file_path} · ${h.symbol}  (score: ${h.score})\n   ${h.snippet}`
+        );
+        return { text: lines.join('\n\n'), isError: false };
       }
     default:
       return { text: `unknown tool: ${name}`, isError: true };

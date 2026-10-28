@@ -1,0 +1,14 @@
+{
+  "name": "spike-001-huggingface-transformers",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Spike: validate @huggingface/transformers on Node.js 26 Windows without native compilation",
+  "dependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "allowScripts": {
+    "onnxruntime-node@1.21.0": true,
+    "sharp@0.34.5": true,
+    "protobufjs@7.6.6": true
+  }
+}
