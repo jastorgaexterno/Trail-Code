@@ -1025,7 +1025,7 @@ program
 
 program
   .command("mcp", { hidden: TRAIL })
-  .description("Serve the graph over MCP (stdio): exposes graft_find_code, graft_trace_calls, graft_find_all, graft_file_api, graft_repo_map and graft_check_freshness as tools")
+  .description("Serve the graph over MCP (stdio): exposes graft_find_code, graft_trace_calls, graft_find_all, graft_file_api, graft_repo_map, graft_check_freshness and graft_search_semantic as tools")
   .argument(...DIR_ARG)
   .option("--brains", "serve only the paired Trail workspace's tools and skills (what Claude Code gets after init --connect)")
   .action(async (dirArg: string | undefined, opts: { brains?: boolean }) => {
