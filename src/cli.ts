@@ -2826,6 +2826,29 @@ function statusCommand(name = "status"): Command {
           `${cloud.workspace.name} · ${cloud.repos.length} repo${cloud.repos.length === 1 ? "" : "s"}${shared ? ", this one included" : `, not this one (${cmd("graft workspace add")})`} · ${cloud.workspace.url}${clouds.length > 1 ? ` · ${clouds.length - 1} more workspace${clouds.length === 2 ? "" : "s"} (${cmd("graft workspace")})` : ""}`,
         );
       row("this week", saved > 0 ? `~${shortCount(saved)} tokens saved` : "nothing saved yet");
+      // Semantic index status
+      {
+        const { existsSync: fsExists } = await import('node:fs');
+        const { join: pj } = await import('node:path');
+        const { contextDirFor: ctxFor } = await import('./context/node-file.js');
+        const ctxDir = ctxFor(repo, program.opts<GlobalOpts>().dir);
+        const dbPath = pj(ctxDir, '.cache', 'embeddings.db');
+        if (fsExists(dbPath)) {
+          try {
+            const { createRequire } = await import('node:module');
+            const req = createRequire(import.meta.url);
+            const Database = req('better-sqlite3');
+            const db = new Database(dbPath, { readonly: true });
+            const { c } = db.prepare('SELECT COUNT(*) AS c FROM embed_nodes').get() as { c: number };
+            const { value: hash } = (db.prepare("SELECT value FROM embed_meta WHERE key = 'graph_hash'").get() ?? {}) as { value?: string };
+            db.close();
+            row("semantic", `✓ ${c.toLocaleString("en-US")} symbols indexed · run \`trail build --semantic\` to refresh`);
+            void hash; // used for future staleness check
+          } catch { /* DB not readable — ignore */ }
+        } else {
+          row("semantic", `✗ not built · run \`trail build --semantic\` to enable vector search`);
+        }
+      }
       // Phase 2 (4.17, D137): Codex's trust of Trail's hooks, and why it keeps nothing new there yet.
       for (const l of codexStatusLines()) row("codex", l);
     });

@@ -178,17 +178,16 @@ test('searchSemantic on empty DB throws or returns empty gracefully', async () =
     },
   );
 
-  // Existing but empty DB → must throw with a message about no embeddings.
+  // embedNodes with zero nodes → must throw immediately with a clear message
+  // (Fix 1: guard against 0-node graph so we never silently create an empty DB).
   _setEmbedderForTest(fakeEmbed);
   try {
     const dbPath = tmpDb();
-    // embedNodes with zero nodes still creates schema but no rows.
-    await embedNodes([], dbPath);
     await assert.rejects(
-      () => searchSemantic('anything', dbPath),
+      () => embedNodes([], dbPath),
       (err: unknown) => {
-        assert.ok(err instanceof Error, 'expected Error for empty DB');
-        assert.match(err.message, /No embeddings|no embeddings/i);
+        assert.ok(err instanceof Error, 'expected Error for zero nodes');
+        assert.match(err.message, /No indexable nodes|no indexable nodes|trail build/i);
         return true;
       },
     );

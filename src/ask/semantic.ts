@@ -149,6 +149,15 @@ export async function embedNodes(nodes: NodeV1[], dbPath: string): Promise<void>
   const db = openDb(dbPath);
   initSchema(db);
 
+  // Guard: nothing to embed — close and surface a clear message.
+  if (nodes.length === 0) {
+    db.close();
+    throw new Error(
+      '[semantic] No indexable nodes — ensure `trail build` has parsed source files '
+      + '(check .gitignore is not excluding your source directory)'
+    );
+  }
+
   const currentHash = graphHash(nodes);
 
   const stored = db.prepare(
@@ -232,7 +241,9 @@ export async function searchSemantic(
   const { c } = db.prepare('SELECT COUNT(*) AS c FROM embed_nodes').get() as { c: number };
   if (c === 0) {
     db.close();
-    throw new Error('No embeddings in DB — call graft_search_semantic once to build the index');
+    throw new Error(
+      '[semantic] Vector index is empty — run `trail build --semantic` to populate it'
+    );
   }
 
   const [queryVec] = await embedTexts([query]);

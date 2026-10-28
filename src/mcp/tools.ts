@@ -360,9 +360,17 @@ async function callSingleTool(
         const contextDir = contextDirFor(root, dirOverride);
         const w = loadGraphCached(contextDir);
         if (!w) return { text: noGraph(), isError: true };
+        const embeddableNodes = w.nodes.filter(n => n.kind !== 'file');
+        if (embeddableNodes.length === 0) {
+          return {
+            text: 'No indexable symbols found — ensure `trail build --semantic` parsed source files'
+               + ' (verify .gitignore is not excluding your source directory)',
+            isError: true,
+          };
+        }
         const dbPath = join(contextDir, '.cache', 'embeddings.db');
         // Idempotent: skips re-embed if DB already populated.
-        await embedNodes(w.nodes, dbPath);
+        await embedNodes(embeddableNodes, dbPath);
         const hits = await searchSemantic(query, dbPath, limit);
         if (hits.length === 0) return { text: 'no semantic matches found', isError: false };
         const filtered = hits.filter(h => h.score > 0.05);
