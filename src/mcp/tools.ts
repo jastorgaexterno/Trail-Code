@@ -130,6 +130,19 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'trail_search_semantic',
+    description:
+      'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. Embeds the query with all-MiniLM-L6-v2 and returns top-K nodes ranked by cosine similarity. Requires `trail build --semantic` first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'plain-language description of what you are looking for' },
+        limit: { type: 'number', description: 'max results (default 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'graft_search_semantic',
     description:
       'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. Embeds the query with all-MiniLM-L6-v2 and returns top-K nodes ranked by cosine similarity. Builds the vector index on first call (may be slow); subsequent calls are fast.',
@@ -212,6 +225,7 @@ async function callWorkspaceTool(
       const { text } = await federateCheck(root, dirOverride);
       return { text, isError: false };
     }
+    case 'trail_search_semantic':
     case 'graft_search_semantic': {
       const query = String(args.query ?? '');
       if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
@@ -353,6 +367,7 @@ async function callSingleTool(
         const map = buildRepoMap(w, { maxDirs });
         return { text: formatRepoMap(map), isError: false };
       }
+      case 'trail_search_semantic':
       case 'graft_search_semantic': {
         const query = String(args.query ?? '');
         if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
