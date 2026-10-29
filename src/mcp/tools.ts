@@ -47,7 +47,7 @@ function unknownSymbolText(query: string): string {
 
 export const TOOLS: ToolDef[] = [
   {
-    name: 'graft_find_code',
+    name: 'trail_find_code',
     description:
       'Query the repo context graph in plain words. Returns ranked nodes with exact file:line spans and the relevant source inlined — usually the full answer, no file reads needed.',
     inputSchema: {
@@ -68,7 +68,7 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: 'graft_file_api',
+    name: 'trail_file_api',
     description:
       "Signatures-only view of one file — every definition's signature + line span, ~10× cheaper than reading the file ($0, no LLM).",
     inputSchema: {
@@ -80,12 +80,12 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: 'graft_check_freshness',
+    name: 'trail_check_freshness',
     description: 'Report whether the committed graph is in sync with the code (drift check).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
-    name: 'graft_trace_calls',
+    name: 'trail_trace_calls',
     description:
       'Structural edges for a symbol, over call/reference/import/implements/extends ($0, no LLM). Defaults to direct callers (who depends on it). Set direction:"out" for callees (what it calls); set depth>1 (or depth:"all" for the full closure) to walk transitively for the full blast radius — every source that breaks if it changes. Run before a multi-file refactor to find ALL affected files.',
     inputSchema: {
@@ -104,7 +104,7 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: 'graft_find_all',
+    name: 'trail_find_all',
     description:
       'Regex search over the graph\'s indexed files, hits grouped by innermost enclosing symbol and ranked by incoming-edge count (coupling) — which hit matters, not just where it is.',
     inputSchema: {
@@ -119,7 +119,7 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: 'graft_repo_map',
+    name: 'trail_repo_map',
     description:
       'Token-budgeted repo orientation — directory clusters, per-directory hubs, and global hotspots computed purely from the wiring graph ($0, no LLM). Use this to get oriented in an unfamiliar repo before diving into files.',
     inputSchema: {
