@@ -519,7 +519,7 @@ grouped(program.command("build"), GROUP.setup)
   )
   .option("--no-gitignore", "skip writing graft/ into .gitignore (same as GRAFT_NO_GITIGNORE=1)")
   .option("--no-ignore", "skip writing .ignore for ripgrep re-admit (same as GRAFT_NO_IGNORE=1)")
-  .option("--semantic", "after building the graph, embed all nodes for semantic search (requires ~87 MB model on first run)")
+  .option("--no-semantic", "skip embedding nodes for semantic search after building the graph")
   .action(async (
     dir: string,
     opts: {
@@ -538,7 +538,7 @@ grouped(program.command("build"), GROUP.setup)
       followNestedRepos?: boolean;
       gitignore?: boolean;
       ignore?: boolean;
-      semantic?: boolean;
+      semantic: boolean;
     },
     command: Command,
   ) => {
@@ -2842,11 +2842,11 @@ function statusCommand(name = "status"): Command {
             const { c } = db.prepare('SELECT COUNT(*) AS c FROM embed_nodes').get() as { c: number };
             const { value: hash } = (db.prepare("SELECT value FROM embed_meta WHERE key = 'graph_hash'").get() ?? {}) as { value?: string };
             db.close();
-            row("semantic", `✓ ${c.toLocaleString("en-US")} symbols indexed · run \`trail build --semantic\` to refresh`);
+            row("semantic", `✓ ${c.toLocaleString("en-US")} symbols indexed · run \`trail build\` to refresh`);
             void hash; // used for future staleness check
           } catch { /* DB not readable — ignore */ }
         } else {
-          row("semantic", `✗ not built · run \`trail build --semantic\` to enable vector search`);
+          row("semantic", `✗ not built · run \`trail build\` to enable vector search`);
         }
       }
       // Phase 2 (4.17, D137): Codex's trust of Trail's hooks, and why it keeps nothing new there yet.

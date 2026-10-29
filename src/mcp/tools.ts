@@ -131,7 +131,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'trail_search_semantic',
-    description: 'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. Requires trail build --semantic first.',
+    description: 'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords.',
     inputSchema: {
       type: 'object',
       properties: {

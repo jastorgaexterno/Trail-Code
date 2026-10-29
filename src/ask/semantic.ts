@@ -242,7 +242,7 @@ export async function searchSemantic(
   if (c === 0) {
     db.close();
     throw new Error(
-      '[semantic] Vector index is empty — run `trail build --semantic` to populate it'
+      '[semantic] Vector index is empty — run `trail build` to populate it'
     );
   }
 
