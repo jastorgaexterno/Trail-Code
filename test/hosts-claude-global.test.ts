@@ -71,72 +71,6 @@ function repoIgnoringJson(): string {
   return d;
 }
 
-test('a worktree of a repo that ignores *.json loses both repo-level triggers', () => {
-  const home = tmpRepo('cghome');
-  const main = repoIgnoringJson();
-
-  runInit(main, { build: false, home });
-  // Both repo files exist in the main checkout...
-  assert.ok(existsSync(join(main, '.mcp.json')));
-  assert.ok(existsSync(join(main, '.claude', 'settings.json')));
-
-  git(main, 'add', '-A');
-  git(main, 'commit', '-m', 'init');
-
-  // ...and git refuses to track either of them, which is the root cause.
-  for (const rel of ['.mcp.json', '.claude/settings.json']) {
-    const tracked = execFileSync('git', ['ls-files', rel], { cwd: main, encoding: 'utf8' }).trim();
-    assert.equal(tracked, '', `${rel} is ignored by *.json, so it is untracked`);
-  }
-
-  const wt = join(tmpRepo('cgwt'), 'feature');
-  git(main, 'worktree', 'add', '--detach', wt, 'HEAD');
-
-  // The shim travels (it's a .cjs). The two files that call it do not.
-  assert.ok(existsSync(join(wt, '.claude', 'helpers', 'graft-hooks.cjs')), 'the .cjs shim is tracked');
-  assert.equal(existsSync(join(wt, '.mcp.json')), false, 'no MCP server in the worktree');
-  assert.equal(existsSync(join(wt, '.claude', 'settings.json')), false, 'no SessionStart hook either');
-
-  // The user-level copy is what covers it: outside the repo, so no .gitignore
-  // reaches it, and Claude Code reads it for every project including this one.
-  assert.ok(existsSync(shimOf(home)));
-  assert.ok(readJson(settingsOf(home)).hooks?.SessionStart, 'user-level SessionStart hook');
-  assert.ok(readJson(userMcpOf(home)).mcpServers?.graft, 'user-scope MCP registration');
-});
-
-test('the user-level hook commands name the shim absolutely, not via CLAUDE_PROJECT_DIR', () => {
-  const home = tmpRepo('cgabs');
-  installClaudeGlobal(home);
-
-  const cmd = readJson(settingsOf(home)).hooks.SessionStart[0].hooks[0].command;
-  // The repo form would resolve inside whatever project is open — precisely the
-  // project that has no shim, which is the case this install exists to cover.
-  assert.ok(!cmd.includes('CLAUDE_PROJECT_DIR'), `absolute, got: ${cmd}`);
-  // Posix form: the command uses one separator throughout, on every platform.
-  assert.ok(cmd.includes(toPosixPath(shimOf(home))), `names the user-level shim, got: ${cmd}`);
-});
-
-/* ------------------------------------------------------------------ *
- * safe to run on someone's real home directory
- * ------------------------------------------------------------------ */
-
-test('an existing settings.json keeps every key graft does not own', () => {
-  const home = tmpRepo('cgkeep');
-  mkdirSync(join(home, '.claude'), { recursive: true });
-  writeFileSync(settingsOf(home), JSON.stringify({ theme: 'light', effortLevel: 'high' }, null, 2));
-
-  installClaudeGlobal(home);
-
-  const s = readJson(settingsOf(home));
-  assert.equal(s.theme, 'light');
-  assert.equal(s.effortLevel, 'high');
-  assert.ok(s.hooks.Stop);
-  // Hooks only: the statusline is a single per-session slot and taking it for every
-  // repo would silently outrank the user's own.
-  assert.equal(s.statusLine, undefined, 'no global statusline');
-  assert.equal(s.permissions, undefined, 'no global allowlist');
-});
-
 test('an existing user-scope MCP server survives, and re-running converges', () => {
   const home = tmpRepo('cgmcp');
   writeFileSync(userMcpOf(home), JSON.stringify({ mcpServers: { paper: { command: 'paper' } } }, null, 2));
@@ -148,21 +82,6 @@ test('an existing user-scope MCP server survives, and re-running converges', () 
 
   const second = installClaudeGlobal(home);
   assert.ok(second.every((w) => w.action === 'unchanged'), `idempotent, got ${JSON.stringify(second)}`);
-});
-
-test('an unparseable file is reported, never overwritten', () => {
-  const home = tmpRepo('cgbad');
-  mkdirSync(join(home, '.claude'), { recursive: true });
-  writeFileSync(settingsOf(home), '{ not json');
-  writeFileSync(userMcpOf(home), '{ also not json');
-
-  const w = installClaudeGlobal(home);
-  assert.deepEqual(
-    w.filter((x) => x.id !== 'claude-global-shim').map((x) => x.action),
-    ['skipped-unparseable', 'skipped-unparseable'],
-  );
-  assert.equal(readFileSync(settingsOf(home), 'utf8'), '{ not json');
-  assert.equal(readFileSync(userMcpOf(home), 'utf8'), '{ also not json');
 });
 
 test('--no-global writes nothing outside the repo', () => {
@@ -212,17 +131,6 @@ test('uninstall removes exactly what the global install added', () => {
   const mcp = readJson(userMcpOf(home));
   assert.equal(mcp.mcpServers.graft, undefined, 'graft server gone');
   assert.ok(mcp.mcpServers.paper, 'the foreign server survives');
-});
-
-test('--no-global uninstall leaves the user-level copy in place', () => {
-  const home = tmpRepo('cgretractkeep');
-  const repo = tmpRepo('cgretractkeeprepo');
-
-  runInit(repo, { build: false, home });
-  runRetract(repo, { home, global: false, apply: true });
-
-  assert.ok(existsSync(shimOf(home)));
-  assert.ok(readJson(settingsOf(home)).hooks?.SessionStart);
 });
 
 test('under trail, graft keeps its user-level server and is turned off only in the trail folder', async () => {

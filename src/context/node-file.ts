@@ -30,7 +30,18 @@ import { relPosix, stripTrailingSlashes } from "../util/paths.js";
 // Value-only import of a constant; `write.ts` pulls in nothing from here, so no cycle.
 import { GRAPH_DIR } from "../graph/write.js";
 import { mapDirFor, isTrailMapDir } from "./map-dir.js";
-import { ignoreInTrailDir } from "../notes/repo-trail.js";
+
+/** Write `entry` into `.trail/.gitignore` so the cache stays out of git. */
+function ignoreInTrailDir(root: string, entry: string): void {
+  const trailDir = join(root, '.trail');
+  mkdirSync(trailDir, { recursive: true });
+  const giPath = join(trailDir, '.gitignore');
+  let current = '';
+  try { current = readFileSync(giPath, 'utf8'); } catch { /* new file */ }
+  if (!current.split('\n').some(l => l.trim() === entry.trim())) {
+    writeFileSync(giPath, current ? `${current.trimEnd()}\n${entry}\n` : `${entry}\n`);
+  }
+}
 
 /** A source file a node was derived from, with its content hash at generation time. */
 export interface SourceRef {

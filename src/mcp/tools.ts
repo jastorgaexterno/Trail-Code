@@ -29,7 +29,6 @@ import {
 import type { NodeV1 } from '../graph/types.js';
 import { join } from 'node:path';
 import { embedNodes, searchSemantic } from '../ask/semantic.js';
-import { recordLookup } from '../cloud/lookup-activity.js';
 import { canonicalToolName } from './tool-names.js';
 import { cmd } from '../brand.js';
 
@@ -153,7 +152,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'trail_search_semantic',
-    description: 'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. Best for specs, docs and .md knowledge files. For code symbols use trail_find_code instead.',
+    description: 'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. Best for specs and docs (.md); for code symbols use trail_find_code instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -306,10 +305,10 @@ async function callSingleTool(
         const engine = new Graft({ contextDir: dirOverride });
         const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
         const r = engine.ask(root, query, { limit, source: true, full: args.full === true, in: inArg });
-        // Same event the CLI's `ask` reports: the learnings shown and the tokens saved.
+        // Same event the CLI's `ask` reports: the tokens it saved.
         // One render serves both the answer and the saving the event reports.
         const { text, savedTokens } = formatAskWithSaved(r);
-        recordLookup(r, root, undefined, savedTokens);
+        void savedTokens; // lookup recording removed (trail-solo-grafo)
         return { text, isError: false };
       }
       case 'graft_file_api': {

@@ -9,8 +9,6 @@ import { runInit, wiringName } from './claude/init.js';
 import { runHostsInit } from './hosts/init.js';
 import { graftCliPath } from './claude/paths.js';
 import { repoWiredForTrail, setBrand, trailOnPath } from './brand.js';
-import { ensureRepoHome } from './notes/home.js';
-import { ensureRepoTrail } from './notes/repo-trail.js';
 import {
   formatUpdateNudge,
   formatWiringRefresh,
@@ -46,11 +44,8 @@ function rewriteWiring(repo: string, hosts: string[], opts: WiringOpts, toTrail 
   // Moving to trail: everything written from here speaks trail, the repo gets
   // its .trail/, and the hosts are rewired under trail's names.
   if (toTrail) setBrand('trail');
-  // Under trail, each refresh also brings `.trail/` and its README up to date.
-  if (toTrail || wiringName(repo) === 'trail') {
-    const { place } = ensureRepoHome(repo);
-    if (place.git) ensureRepoTrail(place.checkout);
-  }
+  // Under trail, .trail/ is created by runInit when --build is set;
+  // ensureRepoHome/ensureRepoTrail removed in trail-solo-grafo change.
   // `opts.global` reaches the claude layer for the same reason `opts.statusline` does:
   // its `~/.claude` writes (hosts/claude-global.ts) are out-of-repo, and a user who
   // declined those at init time must keep declining them on every replay.

@@ -59,36 +59,6 @@ const REPO_FILES = [
 /** Other agents' files: only when this laptop has that agent. */
 const OTHER_FILES = ["GEMINI.md", ".windsurf", ".kiro", join(".github", "copilot-instructions.md"), ".adal", ".grok"];
 
-test("auto writes the main agents' repo files, and laptop settings only for the ones installed here", () => {
-  const home = tmpRepo("auto-cli-home");
-  mkdirSync(join(home, ".claude"));
-  mkdirSync(join(home, ".cursor"));
-  const repo = gitRepo();
-  const r = init(repo, home, ["--agents", "auto"], { CLAUDECODE: "1" });
-  assert.equal(r.status, 0, r.stderr);
-  for (const f of REPO_FILES) assert.ok(existsSync(join(repo, f)), `${f} missing\n${r.stderr}`);
-  for (const f of OTHER_FILES) assert.ok(!existsSync(join(repo, f)), `${f} written for an agent nobody here uses`);
-  assert.ok(existsSync(join(home, ".claude", "settings.json")), "Claude Code's laptop hooks");
-  assert.ok(existsSync(join(home, ".claude", "skills", "trail", "SKILL.md")), "Claude Code's skill");
-  assert.ok(!existsSync(join(home, ".codex")), "Codex isn't installed: nothing for it in the home dir");
-  assert.ok(!existsSync(join(home, ".gemini")), "nor for Gemini CLI or Antigravity");
-  assert.match(r.stderr, /Set up for Claude Code and Cursor on this laptop\. Teammates on Claude Code, Cursor, Codex or OpenCode are covered once you commit\./);
-  assert.doesNotMatch(r.stderr, /—/);
-  assert.deepEqual(wiringOpts(readStamp(repo)).laptop, ["claude", "cursor"]);
-});
-
-test("auto with no Claude Code here writes its committed files but nothing in ~/.claude", () => {
-  const home = tmpRepo("auto-cli-home");
-  mkdirSync(join(home, ".cursor"));
-  const repo = gitRepo();
-  const r = init(repo, home, ["--agents", "auto"]);
-  assert.equal(r.status, 0, r.stderr);
-  assert.ok(existsSync(join(repo, ".claude", "settings.json")));
-  assert.ok(existsSync(join(repo, ".trail", "hook.cjs")));
-  assert.ok(!existsSync(join(home, ".claude")), readdirSync(home).join(","));
-  assert.match(r.stderr, /Set up for Cursor on this laptop\./);
-});
-
 test("a later refresh keeps to the laptop's agents", async () => {
   const home = tmpRepo("auto-cli-home");
   mkdirSync(join(home, ".cursor"));
@@ -136,52 +106,4 @@ test("auto can't be mixed with agent ids", () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /auto/);
   assert.deepEqual(readdirSync(repo), [".git"]);
-});
-
-test("auto --pair tells Trail the agent running init and the agents set up on this laptop", async () => {
-  const bodies: Array<{ path: string; body: Record<string, unknown> }> = [];
-  const server = createServer((req, res) => {
-    let raw = "";
-    req.on("data", (c) => (raw += c));
-    req.on("end", () => {
-      const body = raw ? JSON.parse(raw) : {};
-      bodies.push({ path: req.url ?? "", body });
-      const reply = (status: number, b: unknown) => {
-        res.writeHead(status, { "content-type": "application/json" });
-        res.end(JSON.stringify(b));
-      };
-      if (req.url === "/api/cli/handoffs") return reply(201, { url: "http://127.0.0.1/connect?state=s" });
-      if (req.url === "/api/cli/handoffs/progress") return reply(202, {});
-      return reply(410, { error: "gone" });
-    });
-  });
-  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
-  const port = (server.address() as { port: number }).port;
-  try {
-    const home = tmpRepo("auto-cli-home");
-    mkdirSync(join(home, ".claude"));
-    mkdirSync(join(home, ".cursor"));
-    mkdirSync(join(home, ".codex"));
-    const repo = gitRepo();
-    const child = spawn(
-      process.execPath,
-      ["--import", "tsx", "src/cli.ts", "init", repo, "--no-build", "--agents", "auto", "--pair", "X4GM5OQU4NIA65ZR", "--server", `http://127.0.0.1:${port}`],
-      { env: env(home, { CURSOR_AGENT: "1" }), stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let stderr = "";
-    child.stderr.on("data", (c) => (stderr += c));
-    const code = await new Promise<number | null>((ok) => child.on("close", ok));
-    assert.equal(code, 0, stderr);
-    const progress = bodies.filter((b) => b.path === "/api/cli/handoffs/progress").map((b) => b.body);
-    assert.equal(progress[0]?.agent, "cursor", "the agent running init");
-    const agents = progress.map((p) => (p.findings as { agents?: string[] } | undefined)?.agents).filter(Boolean);
-    assert.ok(agents.length > 0, JSON.stringify(progress));
-    assert.deepEqual(agents[0], ["cursor", "claude", "codex"]);
-    // Sent as soon as the wiring is done: before the map's step.
-    const first = progress.findIndex((p) => (p.findings as { agents?: string[] } | undefined)?.agents);
-    const mapped = progress.findIndex((p) => (p.phases as Array<{ id: string; status: string }> | undefined)?.some((ph) => ph.id === "files" && ph.status !== "todo"));
-    assert.ok(first < mapped, `agents at ${first}, map at ${mapped}`);
-  } finally {
-    server.close();
-  }
 });

@@ -172,37 +172,40 @@ function builtRepo(): string {
   return d;
 }
 
-test("trail --help groups the commands, lists login always and the other workspace ones once signing in is on", () => {
+test("trail --help groups the code map's commands and lists nothing the amputation removed", () => {
   const home = scratchHome();
   const r = run("trail", ["--help"], home);
   assert.equal(r.status, 0);
-  for (const heading of ["Find code", "Learnings:", "Setup:", "CI:"]) assert.ok(r.out.includes(heading), heading);
-  assert.doesNotMatch(r.out, /\bmemory\b/i, "learnings, never memory");
-  for (const c of ["note", "check", "team", "skills", "status"]) assert.match(r.out, new RegExp(`^  ${c} `, "m"), c);
-  // Still run, just not listed: the brain's commands, skills' undo (also under trail skills), and the workspace's own.
-  for (const c of ["viz", "mcp", "stats", "watch", "connect", "trail", "push", "pull", "learn", "forget", "workspace", "logout"])
+  for (const heading of ["Find code", "Setup:", "CI:"]) assert.ok(r.out.includes(heading), heading);
+  // The groups whose commands went away with their layer are gone entirely.
+  assert.ok(!r.out.includes("Learnings:"), "no learnings group");
+  assert.ok(!r.out.includes("Workspace"), "no workspace group");
+  for (const c of ["ask", "grep", "skeleton", "callers", "map", "build", "init", "config", "status", "blast"])
+    assert.match(r.out, new RegExp(`^  ${c} `, "m"), c);
+  // Removed commands (openspec change trail-solo-grafo): absent from the help, and
+  // the binary answers them as unknown rather than running the old code path.
+  for (const c of ["note", "check", "team", "skills", "login", "logout", "workspace"])
     assert.doesNotMatch(r.out, new RegExp(`^  ${c} `, "m"), c);
-  // Signing in is how every agent here gets the team's workspace: always listed.
-  assert.match(r.out, /^  login /m);
-  const on = run("trail", ["--help"], home, process.cwd(), { TRAIL_CLOUD: "1" });
-  assert.ok(on.out.includes("Workspace"));
-  for (const c of ["workspace", "login", "logout"]) assert.match(on.out, new RegExp(`^  ${c} `, "m"), c);
+  const note = run("trail", ["note", "--title", "x"], home);
+  assert.notEqual(note.status, 0, "a removed command does not run");
+  assert.match(`${note.out}${note.err}`, /unknown command/i);
 });
 
-test("graft --help keeps its old flat list, including check, without the trail group", () => {
+test("graft --help keeps its old flat list, without the trail groups or the removed commands", () => {
   const r = run("graft", ["--help"], scratchHome());
   assert.equal(r.status, 0);
   assert.match(r.out, /^Usage: graft /m);
-  for (const c of ["check", "stats", "viz"]) assert.match(r.out, new RegExp(`^  ${c} `, "m"), c);
+  for (const c of ["stats", "viz"]) assert.match(r.out, new RegExp(`^  ${c} `, "m"), c);
+  for (const c of ["note", "check", "team", "skills"]) assert.doesNotMatch(r.out, new RegExp(`^  ${c} `, "m"), c);
   assert.doesNotMatch(r.out, /^  trail /m);
   assert.ok(!r.out.includes("Workspace ·"));
 });
 
-test("the freshness check is graft check under graft and trail build --check under trail", () => {
+test("the freshness check is `build --check` under both names", () => {
   const home = scratchHome();
   const d = builtRepo();
   assert.equal(run("graft", ["build", d], home).status, 0);
-  const g = run("graft", ["check", d], home);
+  const g = run("graft", ["build", "--check", d], home);
   assert.equal(g.status, 0, g.err);
   assert.match(g.out, /graph check: OK/);
   assert.match(g.out, /Run `graft build --deep` to summarize them/);
@@ -210,21 +213,13 @@ test("the freshness check is graft check under graft and trail build --check und
   assert.equal(t.status, 0, t.err);
   assert.match(t.out, /graph check: OK/);
   assert.match(t.out, /Run `trail build --deep` to summarize them/);
-  assert.equal(run("graft", ["build", "--check", d], home).status, 0, "graft build --check works too");
   // Stale: a new function the graph has never seen fails both, the same way.
   writeFileSync(join(d, "src", "c.ts"), "export function gamma(): number {\n  return 2;\n}\n");
-  assert.equal(run("graft", ["check", d, "--json"], home).status, 1);
+  assert.equal(run("graft", ["build", "--check", d, "--json"], home).status, 1);
   assert.equal(run("trail", ["build", "--check", d, "--json"], home).status, 1);
 });
 
-test("trail check is the team check, not the freshness check", () => {
-  // Outside a git repo there is no diff to check; the freshness check is build --check.
-  const r = run("trail", ["check", mkdtempSync(join(tmpdir(), "not-git-"))], scratchHome());
-  assert.equal(r.status, 1);
-  assert.match(r.err, /not a git repository/);
-});
-
-test("trail status puts the code map on one screen, and the workspace only once signing in is on", () => {
+test("trail status puts the code map on one screen and never mentions a workspace", () => {
   const home = scratchHome();
   const d = builtRepo();
   run("trail", ["build", d], home);
@@ -232,8 +227,7 @@ test("trail status puts the code map on one screen, and the workspace only once 
   assert.equal(r.status, 0, r.err);
   assert.match(r.out, /^code map {4}✓ \d+ nodes · in sync with the code$/m);
   assert.doesNotMatch(r.out, /^workspace/m);
-  const on = run("trail", ["status", d], home, process.cwd(), { TRAIL_CLOUD: "1" });
-  assert.match(on.out, /^workspace {3}not connected · Claude offers a link once there are learnings to share$/m);
+  assert.doesNotMatch(r.out, /learning/i, "the learnings row is gone with the layer");
   const json = JSON.parse(run("trail", ["status", d, "--json"], home).out);
   assert.equal(json.workspace, null);
 });
@@ -321,7 +315,7 @@ test("on graft without trail, the agent is told once a week how to get trail", (
   const now = Date.parse("2026-10-14T10:00:00Z");
   const line = trailHandoverLine({ env: { PATH: "" }, home, now });
   assert.match(line ?? "", /graft is now Trail-code/);
-  assert.match(line ?? "", /`graft upgrade` adds it and graft keeps working/);
+  assert.match(line ?? "", /`graft upgrade` switches the name and graft keeps working/);
   assert.equal(trailHandoverLine({ env: { PATH: "" }, home, now: now + 3 * 86400_000 }), null, "not again that week");
   assert.ok(trailHandoverLine({ env: { PATH: "" }, home, now: now + 8 * 86400_000 }), "again the next week");
 });

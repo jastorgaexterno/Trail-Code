@@ -96,11 +96,18 @@ export function inBrand(text: string, b: Brand = brand()): string {
 /* -------------------------------------------------------------------------- */
 
 /**
- * `trail init` wired this repo under trail's names: its committed hooks shim,
- * skill or settings say trail. Read from the repo, not the machine, so every
+ * `trail init` wired this repo: its `.trail/` gitignore is the marker it writes
+ * before anything else, and older wirings left a shim, a skill or a settings
+ * block that names trail. Read from the repo, not the machine, so every
  * teammate's agent speaks the same name whichever command they installed.
+ *
+ * `.trail/.gitignore` is what current `trail init` actually leaves behind (the
+ * hook shim and the Claude settings it used to write are gone), and the map's
+ * location depends on this answer: a repo it does not recognise builds into
+ * `graft/` while its own AGENTS.md says `.trail/cache/`.
  */
 export function repoWiredForTrail(dir: string): boolean {
+  if (existsSync(join(dir, ".trail", ".gitignore"))) return true;
   if (existsSync(join(dir, ".trail", "hook.cjs"))) return true;
   if (existsSync(join(dir, ".claude", "helpers", "trail-hooks.cjs")) || existsSync(join(dir, ".claude", "skills", "trail", "SKILL.md"))) return true;
   try {
@@ -282,7 +289,7 @@ export function trailHandoverLine(input: { env?: NodeJS.ProcessEnv; home?: strin
     /* shown again next time */
   }
   return (
-    "· graft is now Trail-code: the same code map under the `trail` command, plus learnings everyone working in the repo shares in .trail/. " +
-    "Tell the user once, in a line at the end of your first reply, that `graft upgrade` adds it and graft keeps working."
+    "· graft is now Trail-code: the same code map under the `trail` command. " +
+    "Tell the user once, in a line at the end of your first reply, that `graft upgrade` switches the name and graft keeps working."
   );
 }

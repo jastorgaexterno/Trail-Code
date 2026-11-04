@@ -41,44 +41,6 @@ test('the refresh moves a repo when asked to, even when graft itself has not cha
   assert.match(formatWiringRefresh(moved)!, /graft is now trail, and this repo just moved to it/);
 });
 
-test('a graft repo moves to trail once the trail command is installed, and only once', () => {
-  const repo = tmpRepo('move-e2e');
-  spawnSync('git', ['init', '-q'], { cwd: repo });
-  const home = mkdtempSync(join(tmpdir(), 'move-home-'));
-  const saved = { path: process.env.PATH, home: process.env.HOME, trailHome: process.env.TRAIL_HOME, brand: process.env[BRAND_ENV] };
-  process.env.HOME = home;
-  process.env.TRAIL_HOME = join(home, '.trail');
-  const savedProfile = process.env.USERPROFILE;
-  process.env.USERPROFILE = home;
-  try {
-    delete process.env[BRAND_ENV];
-    runInit(repo, { build: false, global: false });
-    assert.ok(existsSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md')), 'wired as graft');
-    // Stamp it at this version, so only the move can trigger a refresh.
-    runUpkeep(repo, runningVersion(), { background: false, home });
-    assert.equal(shouldMoveToTrail(repo), false, 'no trail command yet');
-    assert.equal(shouldMoveToTrail(repo, { ...process.env, PATH: binWith('trail'), GRAFT_NO_TRAIL_SWITCH: '1' }), false, 'a machine can opt out');
-
-    process.env.PATH = `${binWith('trail')}${delimiter}${saved.path}`;
-    const first = runUpkeep(repo, runningVersion(), { background: false, home });
-    assert.match(first.lines.join('\n'), /graft is now trail, and this repo just moved to it/);
-    assert.ok(repoWiredForTrail(repo));
-    assert.ok(existsSync(join(repo, '.trail', 'hook.cjs')), "trail's shared hook");
-    assert.ok(existsSync(join(home, '.claude', 'skills', 'trail', 'SKILL.md')), 'the skill is the person’s own');
-    assert.ok(!existsSync(join(repo, '.claude', 'skills')), 'no skill in the repo, under either name');
-    assert.ok(existsSync(join(repo, '.trail')), 'the repo has its .trail/');
-    assert.deepEqual(readStamp(repo)?.hosts, ['claude'], 'the same hosts as before');
-
-    const second = runUpkeep(repo, runningVersion(), { background: false, home });
-    assert.doesNotMatch(second.lines.join('\n'), /just moved/, 'already on trail');
-  } finally {
-    process.env.PATH = saved.path;
-    if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
-    for (const [k, v] of [['HOME', saved.home], ['TRAIL_HOME', saved.trailHome], [BRAND_ENV, saved.brand]] as const)
-      if (v === undefined) delete process.env[k]; else process.env[k] = v;
-  }
-});
-
 test('a teammate with only graft gets a working trail server in a trail repo, until they install trail', () => {
   const home = mkdtempSync(join(tmpdir(), 'fit-home-'));
   const file = join(home, '.claude.json');

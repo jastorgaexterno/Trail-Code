@@ -1,42 +1,43 @@
 /**
  * `ensureFreshGraph` — the pre-query gate that keeps retrieval honest.
  *
- * Freshness used to be someone else's job: the Claude Code `Stop` hook spawned a
- * background `graft build` *after* the turn ended, so every query an agent made
- * between its first edit and the end of the turn answered from a graph that no
- * longer matched the file it had just changed. Worse, an edit made outside the
- * agent (your editor, a branch switch, a stash) set no `dirty` flag at all, so
- * nothing ever triggered a resync.
+ * A graph is a set of `file:line` spans for one working tree, so an answer drawn
+ * from it is only as honest as its freshness. That cannot be somebody else's job:
+ * an edit made outside the agent (your editor, a branch switch, a stash, a merge)
+ * sets no flag anywhere. So freshness lives in the query path: every retrieval
+ * call probes the working tree (`fingerprint.ts`, ~3ms) and, when something moved,
+ * repairs the structural graph. Properties worth keeping:
  *
- * So freshness moves into the query path: every retrieval call probes the working
- * tree (`fingerprint.ts`, ~3ms) and, when something moved, rebuilds the structural
- * graph before answering. Properties worth keeping:
- *
- * - **$0 and offline.** Tier-1 only — never a summarizer, never `--deep`. Same
- *   money guard `claude/sync-run.ts` carries: auto-anything must not spend money.
+ * - **$0 and offline.** Tier-1 only — never a summarizer, never `--deep`. Anything
+ *   that runs without being asked must not spend money.
  * - **Never fatal.** A failed refresh degrades to answering from the graph on
  *   disk. A query that works today must not start failing because a rebuild did.
- * - **Never a stampede.** It takes the same `graft/.cache/.sync.lock` the
- *   background sync uses, so concurrent MCP calls and the Stop hook can't pile up
- *   rebuilds on top of each other.
+ * - **Never a stampede.** It takes the same `.cache/.sync.lock` a background build
+ *   takes, so concurrent MCP calls and the rebuild they trigger can't pile up.
+ * - **Bounded.** Up to `DRIFT_INLINE_MAX` changed files are re-extracted before
+ *   answering; more than that is handed to a background rebuild and the answer
+ *   carries `[stale: N files changed, rebuilding in background]`. A branch switch
+ *   never blocks a query.
  * - **Writes only what a query reads** (`graphOnly`): the graph, the `ask` sidecar,
  *   the freshness record. Not the markdown cards, not `INDEX.md`, not `.gitignore`.
- *   Those belong to an explicit `graft build` — which the `Stop` hook already runs
- *   at the end of a turn — so retrieval stays cheap and a read stays a read. It
- *   also leaves `stats.json` alone, so that same `Stop` hook still sees `dirty` and
- *   still rebuilds the passive surface.
+ *   Those belong to an explicit `trail build`, so retrieval stays cheap and a read
+ *   stays a read. `stats.json` is left alone too.
+ * - **Lexical here, semantic elsewhere.** The inline repair updates the graph only.
+ *   The vector index loads an ONNX model, so it refreshes in a detached process
+ *   (`build-run.ts`) and never on the path that answers.
  *
  * One case is not drift but absence: inside a git worktree there is no graph at all,
- * because `graft/` is gitignored and so was never checked out. The gate covers that
- * too — it copies the parent checkout's graph in (`./seed.ts`) and then treats the
- * difference between the two checkouts as ordinary drift, which is exactly what it is.
+ * because `.trail/`/`graft/` is gitignored and so was never checked out. The gate
+ * covers that too — it copies the parent checkout's graph in (`./seed.ts`) and then
+ * treats the difference between the two checkouts as ordinary drift, which is
+ * exactly what it is.
  *
- * The other absence is a repo on trail that this machine never built: trail was
- * installed without `trail init` here, or the clone is new. Its learnings arrive,
- * its queries find no code, and the agent goes back to grep for the rest of the
- * session. So the first query there starts a full build in the background and
- * waits a while for it (`buildMissingMap`).
+ * The other absence is a repo this machine never built: `trail init` ran somewhere
+ * else, or the clone is new. Its queries find no code and the agent goes back to
+ * grep for the rest of the session. So the first query there starts a full build in
+ * the background and waits a while for it (`buildMissingMap`).
  */
+
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -47,11 +48,23 @@ import { homeFolderRefusal } from "../init-guard.js";
 import { acquireLockIn, lockHeldIn, releaseLockIn } from "../util/state.js";
 import { CACHE_DIR } from "../context/node-file.js";
 import { buildGraph } from "./build.js";
+import { BACKGROUND_TIMEOUT_MS, embeddingsDbPath } from "./build-run.js";
 import { driftCount, isClean, probeDrift, readFingerprint, type Drift } from "./fingerprint.js";
 import { invalidateGraphCaches } from "./load.js";
 import { seedGraph, type SeedResult } from "./seed.js";
 import { wiringPath } from "./write.js";
 import { cmd, tag } from "../brand.js";
+
+/**
+ * Most files a query will re-extract before answering, instead of handing the
+ * rebuild to a background process.
+ *
+ * A constant, not a flag: a merge or an ordinary edit of a handful of files stays
+ * well under it and gets answered from a current graph; a branch switch or a fresh
+ * clone blows past it, and blocking that query to re-parse hundreds of files is
+ * exactly the cost this gate exists to avoid. See design decision 5.
+ */
+export const DRIFT_INLINE_MAX = 50;
 
 /** How long to wait for another process's in-flight rebuild before giving up and
  * answering from the current graph. Long enough to ride out a small repo's build,
@@ -72,6 +85,11 @@ export interface RefreshResult {
   refreshed: boolean;
   /** What the probe found, when it ran and found something. */
   drift?: Drift;
+  /**
+   * How many files changed when the drift was too large to patch inline, so the
+   * rebuild went to the background and this answer is about the graph as it was.
+   */
+  stale?: number;
   /** One-line explanation for the agent/user, when there's something worth saying. */
   note?: string;
 }
@@ -107,18 +125,73 @@ function firstBuildWait(opts: RefreshOptions): number {
 }
 
 /**
- * Start a full `build` of `dir` in a detached child that outlives this query. The
- * caller holds the lock; the child (`claude/sync-run.ts`) releases it when the
- * build ends, however it ends. Plain `build`: structural, $0, offline.
+ * The detached rebuild runner: the compiled sibling this module ships with, or a
+ * test's stand-in. Null when neither is on disk — the caller then answers from
+ * whatever graph it has, which is the behaviour that predates all of this.
  */
-function startFirstBuild(dir: string): boolean {
-  const run = process.env.GRAFT_TEST_SYNC_RUN ?? fileURLToPath(new URL("../claude/sync-run.js", import.meta.url));
-  if (!existsSync(run)) return false;
-  const child = spawn(process.execPath, [run, dir, String(FIRST_BUILD_TIMEOUT_MS)], { detached: true, stdio: "ignore", windowsHide: true });
+function runnerPath(): string | null {
+  const overridden = process.env.GRAFT_TEST_BUILD_RUN;
+  if (overridden) return existsSync(overridden) ? overridden : null;
+  const run = fileURLToPath(new URL("./build-run.js", import.meta.url));
+  return existsSync(run) ? run : null;
+}
+
+/** Start `build-run` detached. The caller owns the lock contract (see below). */
+function spawnJob(dir: string, outDir: string, mode: "full" | "graph" | "embed", timeoutMs: number): boolean {
+  const run = runnerPath();
+  if (!run) return false;
+  const child = spawn(process.execPath, [run, mode, dir, outDir, String(timeoutMs)], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
   child.on("error", () => { /* the lock ages out, and the next query starts it again */ });
   child.unref();
   return true;
 }
+
+/**
+ * Hand a rebuild to a background process, under the same lock every other rebuild
+ * takes. False when nothing was started (no runner on disk, someone else already
+ * rebuilding, or a `full` job whose lock we could not take).
+ *
+ * `graph` and `full` take the lock and the child releases it; `embed` takes none —
+ * it only reads the graph and writes the vector index, and a query that answered
+ * a moment ago is not going to race it for the graph.
+ *
+ * `embed` also refuses to create an index that isn't there: a repo that never ran
+ * a semantic build must not start downloading a 400 MB model because someone
+ * edited a file. It refreshes what exists, nothing more.
+ */
+function startBackgroundJob(dir: string, outDir: string, mode: "full" | "graph" | "embed"): boolean {
+  if (mode === "embed") {
+    if (!existsSync(embeddingsDbPath(outDir))) return false;
+    return spawnJob(dir, outDir, mode, BACKGROUND_TIMEOUT_MS);
+  }
+  const lockCache = join(outDir, CACHE_DIR);
+  if (lockHeldIn(lockCache)) return true; // someone is already rebuilding
+  if (!acquireLockIn(lockCache)) return false;
+  if (!spawnJob(dir, outDir, mode, mode === "full" ? FIRST_BUILD_TIMEOUT_MS : BACKGROUND_TIMEOUT_MS)) {
+    releaseLockIn(lockCache);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Start a full `full` build of `dir`, for a repo on trail that has no map yet. The
+ * caller holds the lock; the child releases it when the build ends, however it ends.
+ */
+function startFirstBuild(dir: string, outDir: string): boolean {
+  if (lockHeldIn(join(outDir, CACHE_DIR))) return true;
+  if (!acquireLockIn(join(outDir, CACHE_DIR))) return false;
+  if (!spawnJob(dir, outDir, "full", FIRST_BUILD_TIMEOUT_MS)) {
+    releaseLockIn(join(outDir, CACHE_DIR));
+    return false;
+  }
+  return true;
+}
+
 
 /**
  * No graph here and none to copy in. A repo on trail gets one built: its team
@@ -142,7 +215,9 @@ async function buildMissingMap(dir: string, outDir: string, opts: RefreshOptions
   const started = Date.now();
   // The lock free and still no map: nobody is building it, so this query starts it.
   // Taken here, released by the child.
-  if (!lockHeldIn(lockCache) && acquireLockIn(lockCache) && !startFirstBuild(dir)) releaseLockIn(lockCache);
+  if (!startFirstBuild(dir, outDir)) {
+    // Nothing to start, and nothing running either: say so below rather than waiting.
+  }
   const deadline = started + firstBuildWait(opts);
   while (lockHeldIn(lockCache) && Date.now() < deadline) await sleep(FIRST_BUILD_POLL_MS);
   if (existsSync(wiringPath(outDir))) {
@@ -152,7 +227,7 @@ async function buildMissingMap(dir: string, outDir: string, opts: RefreshOptions
   if (lockHeldIn(lockCache)) {
     return {
       refreshed: false,
-      note: "no code map here yet: building one in the background (about a minute on a big repo). Until it's done, answers carry learnings but no code — run the same command again in a minute instead of rewording it",
+      note: "no code map here yet: building one in the background (about a minute on a big repo). Until it's done the answer has no code in it — run the same command again in a minute instead of rewording it",
     };
   }
   return { refreshed: false, note: `couldn't build this repo's code map — run \`${cmd("graft build")}\` to see why` };
@@ -261,9 +336,21 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
     const drift = probeDrift(dir, outDir);
     if (drift && isClean(drift)) return seedNote ? { refreshed: false, note: seedNote } : CLEAN;
 
-    // On the default layout this is `<root>/graft/.cache/.sync.lock`, the very file
-    // the Claude Code hooks lock — so this refresh and the background sync can
-    // never rebuild at the same time.
+    // Too much to patch before answering: a branch switch, a fresh checkout, a
+    // merge of somebody else's work. Answer from the graph that is on disk, say it
+    // is stale, and let a background process repair it — blocking here is what made
+    // a query after `git switch` feel like a hang. The next query, once that build
+    // lands, answers fresh with no note at all.
+    //
+    // Only when the handoff actually happened: if no background runner is on disk
+    // (a half-installed CLI) the note would promise a rebuild that nobody is doing,
+    // so the slower inline repair below is the honest answer.
+    if (drift && driftCount(drift) > DRIFT_INLINE_MAX && startBackgroundJob(dir, outDir, "graph")) {
+      return { refreshed: false, drift, stale: driftCount(drift) };
+    }
+
+    // The lock every rebuild takes, so two queries and a background build can never
+    // rebuild the same graph at the same time.
     const lockCache = join(outDir, CACHE_DIR);
     if (!(await waitForLock(lockCache))) {
       const busy = "a graph rebuild is already in flight — answering from the current graph";
@@ -297,6 +384,10 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       const onlyDirs = readFingerprint(outDir)?.onlyDirs;
       await buildGraph(dir, { contextDir: opts.contextDir, graphOnly: true, onlyDirs });
       invalidateGraphCaches(outDir);
+      // The vector index is the one thing that stays behind: loading the ONNX model
+      // costs seconds and this was a lexical query. It refreshes out of process —
+      // and only if the repo has an index to refresh (`startBackgroundJob`).
+      startBackgroundJob(dir, outDir, "embed");
       return { refreshed: true, drift: drift ?? undefined, note: seedNote };
     } finally {
       unhook();
@@ -322,6 +413,7 @@ export async function ensureFreshChildren(
   if (opts.disabled || envDisabled()) return CLEAN;
   const refreshedIn: string[] = [];
   let files = 0;
+  let staleFiles = 0;
   for (const child of children) {
     // Deliberately NOT `opts`: `contextDirFor` returns an override verbatim and
     // ignores the root it's handed, so forwarding the parent's `--dir` would point
@@ -331,10 +423,15 @@ export async function ensureFreshChildren(
     // clobbering the rest.) A child's graph always lives in its own `<child>/graft`,
     // which is exactly how `loadWorkspaceGraphs` reads them back.
     const r = await ensureFreshGraph(resolve(root, child), { disabled: opts.disabled });
+    if (r.stale !== undefined) staleFiles += r.stale;
     if (!r.refreshed) continue;
     refreshedIn.push(child);
     files += r.drift ? driftCount(r.drift) : 0;
   }
+  // A workspace is as stale as its stalest child: the warning has to survive the
+  // ranking, or an answer that cites some other child's fresh graph looks sound
+  // while the one the user cares about is a branch behind.
+  if (staleFiles > 0) return { refreshed: refreshedIn.length > 0, stale: staleFiles };
   if (!refreshedIn.length) return CLEAN;
   return {
     refreshed: true,
@@ -345,6 +442,10 @@ export async function ensureFreshChildren(
 /** The one-line note a CLI/MCP surface prints when a refresh actually happened.
  * Null when there's nothing to say (the overwhelmingly common case). */
 export function refreshNote(r: RefreshResult): string | null {
+  // Stale first: it is a warning about the answer, not a report of work done.
+  if (r.stale !== undefined) {
+    return `[stale: ${r.stale} files changed, rebuilding in background]`;
+  }
   if (!r.refreshed) return r.note ? `${tag()} ${r.note}` : null;
   const n = r.drift ? driftCount(r.drift) : 0;
   const built = `refreshed the graph (${n || "?"} file${n === 1 ? "" : "s"} changed) before answering`;

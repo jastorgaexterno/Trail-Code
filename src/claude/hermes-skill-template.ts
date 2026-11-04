@@ -6,65 +6,68 @@
  * frontmatter with name/description/category/triggers.
  *
  * This is separate from the Claude Code skill (skill-template.ts) because
- * the formats differ. Content mirrors the Claude Code skill but uses the
- * Hermes frontmatter schema.
+ * the formats differ. Both describe the same reduced surface: the code map and
+ * its nine MCP tools. There is no learnings/knowledge layer any more, so nothing
+ * here may name a command or tool the binary does not expose — an agent that
+ * reads a skill telling it to run a removed command fails with total confidence.
  */
 import { inBrand, type Brand } from "../brand.js";
 
 export function hermesSkillTemplate(brand: Brand = "graft"): string {
-  const b = brand === "trail" ? "trail" : "graft";
   return inBrand(`---
 name: trail
 description: >
-  Use for ANY task in a trail-indexed repo. Runs trail ask before exploring,
-  saves learnings with trail note after sessions, checks trail before committing.
-  Use when: working in repos with .trail/ wired, code search needed, blast radius
-  analysis, or looking up what past sessions decided.
+  Use for ANY task in a trail-indexed repo. Runs trail ask before exploring and
+  trail callers before changing a symbol. The index refreshes itself on every
+  query and works in git worktrees with no setup.
 category: devops
 triggers:
-  - trail ask / trail grep / trail callers / trail map
-  - trail note / trail check / trail blast
-  - code search in graft-indexed repos
-  - looking up decisions from past sessions
-  - understanding blast radius before a change
+  - trail ask / trail grep / trail callers / trail map / trail skeleton
+  - code search in trail- or graft-indexed repos
+  - blast radius before changing a symbol
+  - querying the map from a git worktree
+  - semantic search over specs and .md docs
 ---
 
-# trail — código y memoria de sesión
+# trail — el código en un grafo, no en la cabeza del agente
 
-## Cuándo usar trail
+Un grafo de llamadas construido con tree-sitter (sin LLM, sin API key, $0), expuesto
+como CLI y como 9 tools MCP. No genera documentación que alguien tenga que mantener:
+responde consultas sobre el código tal como está en el working tree.
 
-- **Antes de explorar código**, corrí \`trail ask "<tarea>" --source\` — incluso para
-  "¿dónde está X?" o "¿cómo funciona Y?", antes de hacer grep o abrir archivos.
-- **Al empezar desde un ticket o bug**, corrí \`trail ask\` con sus palabras antes
-  de planificar — puede haber decisiones previas sobre esa área.
-- **Antes de cambiar un símbolo**, usá \`trail callers <sym>\` para ver el blast radius.
-- **Cuando la sesión encuentre algo que el código no puede decirle al próximo**,
-  guardalo con \`trail note\`, commitealo con el cambio.
-- **Antes de commitear/pushear/abrir un MR**, corré \`trail check\`.
+## Cuándo usarlo
 
-## Herramientas MCP — cuál usar según el caso
+- **Antes de explorar código**, correr \`trail ask "<tarea>" --source\` — incluso para
+  "¿dónde está X?" o "¿cómo funciona Y?", antes de grep o de abrir archivos.
+- **Antes de cambiar un símbolo**, correr \`trail callers <sym>\` para ver el blast radius.
+- **Para orientarse** en un repo desconocido, \`trail map\` primero.
+- **Para specs y docs** (.md), \`trail_search_semantic\`.
+
+## Herramientas MCP — cuál usar
+
+Las 9 tools: \`trail_set_scope\`, \`trail_find_code\`, \`trail_file_api\`,
+\`trail_check_freshness\`, \`trail_build\`, \`trail_trace_calls\`, \`trail_find_all\`,
+\`trail_repo_map\`, \`trail_search_semantic\`.
 
 | Tool | Para qué | Cuándo |
 |---|---|---|
 | \`trail_find_code\` | Búsqueda léxica | **Código**: funciones, símbolos, variables, clases |
-| \`trail_find_all\` | Grep exhaustivo | Todas las ocurrencias de un literal |
-| \`trail_trace_calls\` | Grafo de llamadas | Blast radius antes de cambiar algo |
-| \`trail_file_api\` | Firmas del archivo | Ver API sin leer el archivo completo |
-| \`trail_search_semantic\` | Búsqueda conceptual | **Solo specs/docs/knowledge** en lenguaje natural |
-| \`trail_repo_map\` | Mapa del workspace | Orientarse en un repo desconocido |
-| \`trail_check_freshness\` | Estado del índice | Antes de buscar si no se ha buildeado |
-| \`trail_build\` | Rebuild índice | Cuando freshness reporta stale |
+| \`trail_find_all\` | Grep exhaustivo | Todas las ocurrencias de un literal, agrupadas por símbolo |
+| \`trail_trace_calls\` | Grafo de llamadas | Blast radius antes de cambiar algo (\`direction\`, \`depth\`) |
+| \`trail_file_api\` | Firmas del archivo | Ver la API sin leer el archivo completo |
+| \`trail_repo_map\` | Mapa del repo | Orientarse en un repo o workspace desconocido |
+| \`trail_search_semantic\` | Búsqueda conceptual | **Solo specs/docs** en lenguaje natural (.md) |
+| \`trail_check_freshness\` | Estado del índice | ¿El mapa coincide con el working tree? |
+| \`trail_build\` | Rebuild en background | Reconstruir grafo + índice semántico |
+| \`trail_set_scope\` | Fijar scope de sesión | Acotar todas las consultas a un subtree del workspace |
 
-> **Regla clave sobre semántico**: \`trail_search_semantic\` SOLO aporta valor en archivos \`.md\`
-> (specs OpenSpec, cartas de sistema, knowledge repos). Para código TypeScript/C#/Python
-> **usar siempre \`trail_find_code\`** — el modelo de embeddings no entiende tokens de código.
+> **Regla del semántico**: \`trail_search_semantic\` embebe lenguaje natural, así que
+> rinde en \`.md\` (specs, docs, cartas de sistema) y aporta poco en código.
+> Para un nombre de símbolo usar siempre \`trail_find_code\`.
 >
 > ✅ \`trail_search_semantic("cómo funciona la cuota mínima")\` → encuentra specs
 > ❌ \`trail_search_semantic("retomarCopiaEnProceso")\` → no matchea código
 > ✅ \`trail_find_code("retomarCopiaEnProceso")\` → encuentra el símbolo exacto
-
-En workspaces con repos compound (ej. \`default-core/frontend\`), usar path completo:
-\`trail_find_code(query="...", in="default-core/frontend")\` — \`in="default-core"\` no es válido.
 
 ## CLI equivalente (cuando el servidor MCP no está activo)
 
@@ -73,81 +76,71 @@ trail ask "<pregunta>" --source     # localizar + entender
 trail grep "<literal>"              # exhaustivo — todas las ocurrencias
 trail callers <sym> --depth 2       # blast radius antes de cambiar
 trail skeleton <archivo>            # API del archivo en ~200 tokens
-trail map                           # orientación del workspace
+trail map                           # orientación del repo o workspace
+trail build                         # reconstruir el mapa (incluye cards e INDEX.md)
+trail status                        # estado del mapa, frescura y tokens ahorrados
+trail blast --base origin/main      # blast radius de un diff (para CI)
+trail viz                           # grafo interactivo en el browser
 \`\`\`
 
-## Guardar un learning
+\`trail build --deep\` usa un LLM para resumir símbolos: es opt-in y necesita API key.
 
-Guardar cuando la sesion encuentre algo que el codigo no puede decirle al proximo.
+## Worktrees
 
-\`\`\`bash
-trail note --title "decision en palabras simples" \\
-  --touches "src/archivo.ts#Funcion" \\
-  --issue "MTD-287"   # ticket Jira, GitLab (#134), GitHub o URL completa
-  -m "## Decided\\n..."
-\`\`\`
+Un git worktree enlazado (\`.git\` es un archivo, no un directorio) no tiene índice
+propio, porque el mapa vive en el cache git-ignored. **No hay nada que ejecutar
+antes**: la primera consulta copia el grafo del checkout principal y lo parchea con
+el diff entre las dos ramas, así que la respuesta es sobre el código de *ese*
+worktree, no sobre la rama del principal. El índice semántico viaja igual.
+
+## Refresco por drift
+
+Toda consulta compara el fingerprint del índice contra el working tree:
+
+- **Hasta 50 archivos cambiados**: se re-extraen antes de responder. Una edición
+  recién hecha ya está en el grafo y la respuesta no lleva advertencia.
+- **Más de 50** (un cambio de rama, el merge de trabajo ajeno): se dispara un
+  rebuild en background y la respuesta empieza con
+  \`[stale: N files changed, rebuilding in background]\`. Significa "esta respuesta
+  puede ser anterior al cambio": volver a preguntar en un momento, sin reformular.
+- El índice semántico se refresca siempre en background: cargar el modelo local
+  cuesta segundos y no debe bloquear una consulta léxica.
+
+Por eso no hace falta \`trail build\` después de un merge. El checkout principal
+tampoco necesita quedarse en una rama concreta: cada path consultado responde sobre
+su propio working tree.
 
 ## Scope en workspace grande
 
-**Siempre usar \`--in\` o el parametro \`in=\` para acotar al repo correcto.**
-Sin el, las busquedas federan sobre todos los repos del workspace (~20+), trayendo
-hits de repos de otros clientes o proyectos no relacionados.
+**Siempre acotar al repo correcto** con \`--in\` (CLI) o \`in=\` (MCP). Sin eso, las
+búsquedas federan sobre todos los repos del workspace y traen hits de otros clientes.
 
 \`\`\`
-# MCP — siempre con in=
+# MCP
 trail_find_code(query="EvaluacionDetalle", in="default-core/frontend")
-trail_search_semantic(query="cuota minima envio", in="default-core")
+trail_search_semantic(query="cuota minima", in="default-core")
 
-# CLI fallback
+# CLI
 trail ask "EvaluacionDetalle" --in default-core/frontend/
 \`\`\`
 
-## Visualizacion del grafo
+En workspaces con repos compound (ej. \`default-core/frontend\`), usar el path
+completo: \`in="default-core"\` no es un scope válido.
 
-\`\`\`bash
-trail viz                              # abre el browser en localhost:4400
-trail viz --repos frontend backend     # solo esos repos del workspace
-trail viz --skip detafull openspec     # todos menos esos
-trail viz --include-tests              # tests visibles (ocultos por defecto)
-trail viz --export out/                # HTML estatico para CI o GitHub Pages
-\`\`\`
+## Cómo leer el resultado
 
-## Indexar .md (cartas de sistema, glosario)
-
-\`\`\`bash
-trail build --include-md    # activa indexacion .md persistida
-trail ask "tasa efectiva"   # ahora encuentra cartas de sistema
-trail build --no-include-md # revertir
-\`\`\`
-
-## Antes de publicar el trabajo
-
-Ejecutar **en este orden** antes del primer push de cualquier rama:
-
-\`\`\`bash
-<typecheck>                              # ej. tsc -b (TS), go vet, cargo check, mypy
-<lint>                                   # ej. bun run lint / npm run lint
-<tests>                                  # ej. npx vitest run <módulo>
-trail check --base origin/<base>         # blast radius: conflictos con otras ramas y learnings
-\`\`\`
-
-\`trail check\` va **al final**, antes del push — no después del MR.
-Si detecta solapamiento con otra rama activa, avisarle al reviewer en la descripción del MR.
-
-\`\`\`bash
-trail check           # verifica el diff contra learnings del equipo
-trail check --base origin/develop   # contra otro branch
-\`\`\`
+- Los hits traen \`covers:\` con el \`file:line\` exacto: citar desde ahí, no re-abrir
+  el archivo para "verificar".
+- Si un span viene truncado ("+N more lines"), abrir el archivo en ese rango exacto.
+- \`trail ask\` devuelve top-N; para "todas las ocurrencias" usar \`trail grep\`.
+- No pasar la salida por \`head\`/\`tail\`: ya viene acotada y reporta lo que omitió.
 
 ## Configuración del servidor MCP (Hermes)
 
-El servidor trail debe estar registrado en la config de Hermes:
-
-**Windows:**
 \`\`\`yaml
 mcp_servers:
   trail:
-    command: C:/Users/<user>/AppData/Roaming/npm/trail.cmd
+    command: C:/Users/<user>/AppData/Roaming/npm/trail.cmd   # o "trail" en Linux/macOS
     args:
       - mcp
       - C:/ruta/al/workspace
@@ -155,16 +148,7 @@ mcp_servers:
       PYTHONUTF8: "1"
 \`\`\`
 
-**Linux / WSL / macOS:**
-\`\`\`yaml
-mcp_servers:
-  trail:
-    command: trail
-    args:
-      - mcp
-      - /ruta/al/workspace
-\`\`\`
-
 Si \`trail\` no está instalado: \`npm install -g trail-code-detacoop --ignore-scripts\`
+y después \`trail init\` en el repo.
 `, brand);
 }

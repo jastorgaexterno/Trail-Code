@@ -4,20 +4,17 @@ import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { disableGraftServerIn, installClaudeGlobal, type GlobalWrite } from '../hosts/claude-global.js';
 import { mergeGraftSettings, mergeTrailShared, mergeTrailLocal } from './settings-merge.js';
-import { statuslineShim, hooksShim, rememberInstall } from './shim-template.js';
 import { skillTemplate } from './skill-template.js';
 import { hermesSkillTemplate } from './hermes-skill-template.js';
 import { mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
 import { readJsonObject } from '../hosts/config-write.js';
-import { ignoreInTrailDir } from '../notes/repo-trail.js';
-export { ignoreInTrailDir };
 import { hasGraftIndex } from '../graph/root.js';
 import type { PlannedWrite } from '../hosts/plan.js';
 import { repoWiredForTrail, type Brand } from '../brand.js';
 
-/** trail's committed hook, inside `.trail/` where a `.claude/*` ignore rule can't drop it. */
+/** trail's committed hook path (kept for retract/upkeep references). */
 export const TRAIL_HOOK = join('.trail', 'hook.cjs');
-/** The status line's shim. Also in `.trail/`, but ignored there: only people with trail draw it. */
+/** The status line's shim path (kept for retract/upkeep references). */
 export const TRAIL_STATUSLINE = join('.trail', 'statusline.cjs');
 /** Where trail's skill goes: the user's own `~/.claude`, never the repo. */
 export function trailSkillPath(home: string = homedir()): string {
@@ -45,6 +42,18 @@ export function hermesInstalled(home: string = homedir()): boolean {
   return existsSync(dir);
 }
 
+/** Write `entry` into `.trail/.gitignore` to keep the cache out of git. */
+function ignoreInTrailDir(root: string, entry: string): void {
+  const trailDir = join(root, '.trail');
+  mkdirSync(trailDir, { recursive: true });
+  const giPath = join(trailDir, '.gitignore');
+  let current = '';
+  try { current = readFileSync(giPath, 'utf8'); } catch { /* new file */ }
+  if (!current.split('\n').some(l => l.trim() === entry.trim())) {
+    writeFileSync(giPath, current ? `${current.trimEnd()}\n${entry}\n` : `${entry}\n`);
+  }
+}
+
 /**
  * The files `runInit` writes — pure, no writes, so `--dry-run` and the picker
  * can report them up front.
@@ -54,10 +63,7 @@ export function claudeTargets(dir: string, initBrand?: Brand, home?: string): Pl
 }
 
 /**
- * The name the Claude Code wiring goes by in `dir`: trail's where `trail init`
- * is wiring it now (`initBrand`) or already did, graft's everywhere else.
- * Otherwise decided by the repo, not the machine, so a teammate on graft
- * refreshing the wiring writes the same files and never flips them back.
+ * The name the Claude Code wiring goes by in `dir`.
  */
 export function wiringName(dir: string, initBrand?: Brand): Brand {
   return initBrand === 'trail' || repoWiredForTrail(dir) ? 'trail' : 'graft';
@@ -65,14 +71,7 @@ export function wiringName(dir: string, initBrand?: Brand): Brand {
 
 /**
  * `claudeTargets` under one name.
- *
- * trail splits what it writes in two. Shared, committed once by whoever sets
- * the repo up: `.trail/hook.cjs` and one SessionStart entry in
- * `.claude/settings.json`, which is all a teammate without trail needs to be
- * shown the learnings and offered trail. Personal, where git never looks: the
- * status line and allowlist in `.claude/settings.local.json`, the skill in
- * `~/.claude/skills/`, and the other hooks in `~/.claude` (hosts/claude-global.ts).
- * No MCP server: the hooks and the `trail` command do what it did.
+ * trail-solo-grafo: hook.cjs and settings.json writing removed; kept for retract/plan compatibility.
  */
 export function claudeTargetsFor(dir: string, name: Brand, home: string = homedir()): PlannedWrite[] {
   if (name !== 'trail') return legacyClaudeTargets(dir, name);
@@ -87,10 +86,7 @@ export function claudeTargetsFor(dir: string, name: Brand, home: string = homedi
 }
 
 /**
- * The layout every graft repo has, and trail repos had before 0.23: shims in
- * `.claude/helpers/`, the skill in `.claude/skills/`, the server in `.mcp.json`,
- * in that order. `runInit` writes it for graft; for trail it's what a refresh
- * clears away, and what uninstall removes under both names.
+ * The layout every graft repo has: shims in `.claude/helpers/`, the skill in `.claude/skills/`.
  */
 export function legacyClaudeTargets(dir: string, name: Brand): PlannedWrite[] {
   const t = (path: string, what: string, kind: PlannedWrite['kind'] = 'claude'): PlannedWrite =>
@@ -100,25 +96,16 @@ export function legacyClaudeTargets(dir: string, name: Brand): PlannedWrite[] {
     t(join(dir, '.claude', 'helpers', `${name}-statusline.cjs`), 'statusline shim'),
     t(join(dir, '.claude', 'helpers', `${name}-hooks.cjs`), 'hooks shim'),
     t(join(dir, '.claude', 'skills', name, 'SKILL.md'), `${name} skill`),
-    // Tagged 'mcp' so the picker doesn't label Claude Code as having no MCP.
     t(join(dir, '.mcp.json'), `mcpServers.${name}`, 'mcp'),
   ];
 }
 
 /**
- * Build the graph if it isn't there yet. Not Claude-specific: the wiring for any
- * host points at `graft/`, so `graft init` builds whichever hosts were selected —
- * this lives beside `runInit` only because that's the caller that owns `built`.
- * Best-effort; the user can always run `graft build` (the epilogue says so).
+ * Build the graph if it isn't there yet.
  */
 export function buildGraphIfMissing(dir: string, opts: { build?: boolean; cliPath?: string }): boolean {
-  // `hasGraftIndex`, not just wiring.json: a workspace parent's graph IS its
-  // `workspace.json` (nodes live in the children), so testing for wiring.json
-  // alone would call it unbuilt and rebuild every child on each init.
   if (opts.build === false || !opts.cliPath || hasGraftIndex(dir)) return false;
   try {
-    // execArgv carries the loader graft itself was started with (tsx, when run
-    // from source), so the child can run a .ts entry point too.
     execFileSync(process.execPath, [...process.execArgv, opts.cliPath, 'build', '.'], { cwd: dir, stdio: 'inherit', timeout: 300000, windowsHide: true });
     return true;
   } catch {
@@ -126,7 +113,7 @@ export function buildGraphIfMissing(dir: string, opts: { build?: boolean; cliPat
   }
 }
 
-/** The repo's settings as an object to merge into: {} when missing or empty, null when it isn't plain JSON. */
+/** The repo's settings as an object to merge into. */
 function readSettings(path: string): Record<string, any> | null {
   let text: string;
   try { text = readFileSync(path, 'utf8'); } catch { return {}; }
@@ -142,11 +129,8 @@ function readSettings(path: string): Record<string, any> | null {
 export interface InitResult {
   settingsPath: string;
   shims: string[];
-  /** Where the skill went; '' when nothing was written (trail under `--no-global`). */
   skill: string;
-  /** the `.mcp.json` write registering the graft MCP server for Claude Code; trail writes none. */
   mcp: McpWrite | null;
-  /** the user-level writes under `~/.claude`, empty when `global: false`. */
   global: GlobalWrite[];
   warnings: string[];
   built: boolean;
@@ -157,49 +141,26 @@ export function runInit(
   opts: { build?: boolean; cliPath?: string; statusline?: boolean; global?: boolean; home?: string; brand?: Brand } = {},
 ): InitResult {
   if (wiringName(dir, opts.brand) === 'trail') return runTrailInit(dir, opts);
-  // Same list `--dry-run` and the picker report, so the two can't drift apart.
-  const [settings, statusline, hooks, skill, mcpTarget] = legacyClaudeTargets(dir, 'graft').map((t) => t.path);
+  // graft brand: write settings (no hooks), skill, MCP. Shims removed (trail-solo-grafo).
+  const [settings, _statusline, _hooks, skill, mcpTarget] = legacyClaudeTargets(dir, 'graft').map((t) => t.path);
 
-  mkdirSync(dirname(statusline), { recursive: true });
+  mkdirSync(dirname(skill), { recursive: true });
 
   const settingsPath = settings;
   const existing = readSettings(settingsPath);
   const { merged, warnings } = mergeGraftSettings(existing ?? {}, { statusline: opts.statusline, name: 'graft' });
-  // A file that isn't plain JSON (a comment, a trailing comma) is the
-  // person's, and rewriting it would drop what they put there, their own
-  // hooks included. Upkeep replays this at session start, so it has to hold
-  // there too. The ~/.claude copy still runs the hooks.
   if (existing) writeFileSync(settingsPath, `${JSON.stringify(merged, null, 2)}\n`);
-  else warnings.push(notPlainJson('.claude/settings.json', "graft's hooks"));
+  else warnings.push(notPlainJson('.claude/settings.json', "graft's settings"));
 
-  const sl = statusline;
-  const hk = hooks;
-  // The shims are committed, so they name nothing about this machine; where the
-  // package lives here goes to the trail home instead, for them to find first.
-  writeFileSync(sl, statuslineShim()); chmodSync(sl, 0o755);
-  writeFileSync(hk, hooksShim()); chmodSync(hk, 0o755);
-  rememberInstall(opts.home ?? homedir());
-
-  // Install the graft skill — the piece that redirects the agent to graft/ before it
-  // greps source. Overwritten each run (graft owns this file), like the shims above.
   const skillPath = skill;
-  mkdirSync(dirname(skillPath), { recursive: true });
   writeFileSync(skillPath, skillTemplate('graft'));
 
-  // Register the graft MCP server in the project's .mcp.json so Claude Code
-  // exposes graft_find_code/graft_trace_calls/etc. as tools — the same keyed merge the
-  // other hosts use (existing servers preserved; unparseable files skipped).
   const mcp = mergeJsonKey('claude', mcpTarget, 'mcpServers', serverEntry({ brand: 'graft' }), 'graft');
 
-  // The same wiring again, one level up in `~/.claude`, because everything above
-  // this line can be erased by a `.gitignore` and lost to `git worktree add`. See
-  // hosts/claude-global.ts for the failure that motivates it. Gated on the same
-  // flag `registerMcpConfigs` uses, so `--no-global` still means "nothing outside
-  // this repo".
   const global = opts.global === false ? [] : installClaudeGlobal(opts.home ?? homedir(), 'graft');
 
   const built = buildGraphIfMissing(dir, opts);
-  return { settingsPath, shims: [sl, hk], skill: skillPath, mcp, global, warnings, built };
+  return { settingsPath, shims: [], skill: skillPath, mcp, global, warnings, built };
 }
 
 /** The warning for a settings file init left alone because it isn't plain JSON. */
@@ -208,10 +169,10 @@ function notPlainJson(file: string, what: string): string {
 }
 
 /**
- * `runInit` for a repo on trail. Shared: `.trail/hook.cjs` and its one
- * SessionStart entry in `.claude/settings.json`. Personal: everything else.
- * Run again over a repo set up the old way, it moves it: the old shims, the
- * repo skill and trail's `.mcp.json` server go.
+ * `runInit` for a repo on trail.
+ * trail-solo-grafo: writes only .trail/ dir, Hermes skill, and MCP config.
+ * Hook shim (.trail/hook.cjs), statusline shim, .claude/settings.json, and
+ * knowledge hook plugin are NOT written.
  */
 function runTrailInit(
   dir: string,
@@ -219,70 +180,42 @@ function runTrailInit(
 ): InitResult {
   const home = opts.home ?? homedir();
   const global = opts.global !== false;
-  const [settings, hook, local, statusline, skill] = claudeTargetsFor(dir, 'trail', home).map((t) => t.path);
 
-  mkdirSync(dirname(hook), { recursive: true });
-  writeFileSync(hook, hooksShim()); chmodSync(hook, 0o755);
-  writeFileSync(statusline, statuslineShim()); chmodSync(statusline, 0o755);
-  ignoreInTrailDir(dir, 'statusline.cjs');
-  // The map and its caches (`.trail/cache/`, context/map-dir.ts) are each machine's own. Said here as well as at
-  // the build: a hook or `--no-build` writes the cache there before any build adds the line.
+  // Create the .trail/ directory and git-ignore the cache inside it.
+  mkdirSync(join(dir, '.trail'), { recursive: true });
   ignoreInTrailDir(dir, 'cache/');
-  rememberInstall(home);
 
-  // Either file, when it isn't plain JSON, is the person's and stays as it is
-  // (see runInit): rewriting it would drop their own hooks and settings.
-  const existingShared = readSettings(settings);
-  if (existingShared) {
-    mkdirSync(dirname(settings), { recursive: true });
-    writeFileSync(settings, `${JSON.stringify(mergeTrailShared(existingShared), null, 2)}\n`);
-  }
-
-  // Hooks for every other event come from `~/.claude`. Only when that's off do
-  // they go in the personal file, beside the status line.
-  const existingLocal = readSettings(local);
-  const { merged, warnings } = mergeTrailLocal(existingLocal ?? {}, { statusline: opts.statusline, hooks: !global });
-  if (existingLocal) writeFileSync(local, `${JSON.stringify(merged, null, 2)}\n`);
-  else warnings.push(notPlainJson('.claude/settings.local.json', "trail's status line and allowlist"));
-  if (!existingShared) warnings.unshift(notPlainJson('.claude/settings.json', "trail's session-start hook"));
-  keepOutOfGit(dir, join('.claude', 'settings.local.json'));
+  const warnings: string[] = [];
 
   let skillPath = '';
   if (global) {
+    // Write the trail Claude skill.
+    const skill = trailSkillPath(home);
     mkdirSync(dirname(skill), { recursive: true });
     writeFileSync(skill, skillTemplate('trail'));
     skillPath = skill;
 
-    // Also write the Hermes skill when Hermes is installed on this machine.
+    // Write the Hermes skill when Hermes is installed on this machine.
     if (hermesInstalled(home)) {
       const hPath = hermesSkillPath(home);
       mkdirSync(dirname(hPath), { recursive: true });
       writeFileSync(hPath, hermesSkillTemplate('trail'));
-
-      // Also install the Hermes gateway hook for knowledge injection at session start.
-      // Lazy import — keeps the module out of the hot path for non-Hermes machines.
-      import('../knowledge/hermes-hook.js').then(({ writeHermesKnowledgeHook }) => {
-        writeHermesKnowledgeHook(home);
-      }).catch(() => { /* best-effort */ });
     }
   }
 
-  // An old settings.json left as it was still runs the old shims: they stay until it can be rewritten.
-  clearOldLayout(dir, { keepShims: !existingShared });
+  // Clean up any old hook/shim/skill files a previous init may have written.
+  clearOldLayout(dir);
 
   const globalWrites = global ? installClaudeGlobal(home, 'trail') : [];
-  // A trail repo on a machine with graft's server installed for everything:
-  // graft goes off in this folder, so its tools don't show here.
   if (global) globalWrites.push(disableGraftServerIn(home, resolve(dir)));
 
   const built = buildGraphIfMissing(dir, opts);
-  return { settingsPath: settings, shims: [statusline, hook], skill: skillPath, mcp: null, global: globalWrites, warnings, built };
+  // settings path: nothing written now; return empty string.
+  return { settingsPath: '', shims: [], skill: skillPath, mcp: null, global: globalWrites, warnings, built };
 }
 
 /**
- * What trail wrote before 0.23 and doesn't any more: both names' shims in
- * `.claude/helpers/`, the skill in `.claude/skills/`, and trail's server in
- * `.mcp.json`. Settings entries are already gone: the merges replace them.
+ * Remove old hook/shim/skill files a previous init may have written.
  */
 function clearOldLayout(dir: string, opts: { keepShims?: boolean } = {}): void {
   for (const n of ['graft', 'trail'] as const) {
@@ -293,14 +226,16 @@ function clearOldLayout(dir: string, opts: { keepShims?: boolean } = {}): void {
     }
     rmSync(dirname(oldSkill), { recursive: true, force: true });
   }
-  // The folders they were in, once nothing else is: rmdir refuses a non-empty one.
   for (const d of [join(dir, '.claude', 'helpers'), join(dir, '.claude', 'skills')]) {
     try { rmdirSync(d); } catch { /* holds the user's files, or was never there */ }
   }
+  // Remove old .trail/hook.cjs and .trail/statusline.cjs if they exist.
+  rmSync(join(dir, TRAIL_HOOK), { force: true });
+  rmSync(join(dir, TRAIL_STATUSLINE), { force: true });
   dropServer(join(dir, '.mcp.json'), ['trail', 'graft']);
 }
 
-/** Take trail's (or graft's) server out of an `.mcp.json`; the file goes if nothing else was in it. */
+/** Take trail's (or graft's) server out of an `.mcp.json`. */
 function dropServer(path: string, names: string[]): void {
   try {
     const loaded = readJsonObject(path);
@@ -316,16 +251,14 @@ function dropServer(path: string, names: string[]): void {
 }
 
 /**
- * Keep a personal file out of git without touching the repo's `.gitignore`:
- * if nothing ignores it already, it goes in `.git/info/exclude`, which is
- * never committed. A folder that isn't a git checkout is left alone.
+ * Keep a personal file out of git without touching the repo's `.gitignore`.
  */
 export function keepOutOfGit(dir: string, rel: string): void {
   try {
     execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd: dir, stdio: 'ignore', windowsHide: true });
-    return; // exit 0: already ignored
+    return;
   } catch (e) {
-    if ((e as { status?: number }).status !== 1) return; // 128: not a git checkout
+    if ((e as { status?: number }).status !== 1) return;
   }
   try {
     let exclude = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
@@ -335,5 +268,5 @@ export function keepOutOfGit(dir: string, rel: string): void {
     if (text.split('\n').some((l) => l.trim() === line)) return;
     mkdirSync(dirname(exclude), { recursive: true });
     appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}${line}\n`);
-  } catch { /* best-effort: git status shows the file, and nothing else breaks */ }
+  } catch { /* best-effort */ }
 }
