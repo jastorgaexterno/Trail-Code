@@ -1,109 +1,119 @@
-# Trail-Code Fork — Semantic Search
+# Trail-Code fork
 
-This is a fork of [trailhq/Trail-Code](https://github.com/trailhq/Trail-Code) (base: v0.28.0).
+A fork of [trailhq/Trail-Code](https://github.com/trailhq/Trail-Code) (base v0.28.0),
+published as `trail-code-detacoop`. Upstream builds the code map; this fork keeps that
+and drops everything around it that wrote to git on its own.
 
-## What this fork adds
+## What the fork adds
 
-### `graft_search_semantic` — vector search over your code
+### `trail_search_semantic` — vector search over the repo
 
-Find code by **meaning**, not just keywords. When `graft ask` returns weak results because the code uses different terms than your query, semantic search bridges the gap.
+Find code by meaning, not just by keyword, when `trail ask` comes back weak because
+the code uses different words than the question. Each node is embedded with
+`Xenova/all-mpnet-base-v2` (local ONNX, no API key, no network) into
+`<cache>/.cache/embeddings.db`, and the MCP tool embeds the query and returns the
+closest nodes by cosine similarity.
 
-**How it works:** after `trail build --semantic`, each parsed symbol is embedded with `all-MiniLM-L6-v2` (local ONNX, no API key, no network) and stored in `graft/.cache/embeddings.db`. The MCP tool embeds your query and returns the closest symbols by cosine similarity.
+- **Incremental**: `body_hash` per node, so an edit re-embeds the nodes it changed and
+  nothing else. Deleted nodes are pruned.
+- **Workspace-aware**: federated over the children's own databases, results labelled
+  `[repo/]`.
+- **Best on prose.** The model is trained on natural language: it is strong on `.md`
+  (specs, docs) and weak on TypeScript/C# symbols — use `trail_find_code` for those.
 
-**Workspace-aware:** works across multi-repo workspaces — results are labeled `[repo/]`.
+### Worktrees are first-class
 
-**Incremental:** the index is hash-checked on each call; only re-embeds when the graph changes.
+A linked worktree has no cache (it is git-ignored). The first query seeds it from the
+main checkout — graph, `ask` index and vector index — and patches the difference
+between the two branches, so the answer is about that worktree's code. Nothing to run
+first, and the main checkout never has to sit on a particular branch.
 
-### Performance fix: `graft grep` O(n) instead of O(files×nodes)
+### The map refreshes itself, with a bound
 
-Fixes [#702](https://github.com/trailhq/Trail-Code/issues/702) — `grepGraph` was O(files × nodes) due to `symbolsOf` rescanning all graph nodes per file. Pre-indexes nodes by path in a `WeakMap`, reducing to O(nodes) one-time build + O(1) per lookup. 43s → 1.6s on a 3,700-file repo.
+Every query probes the working tree. Up to 50 changed files are re-extracted before
+the answer; more than that (a branch switch, a merge) goes to a detached rebuild and
+the answer opens with `[stale: N files changed, rebuilding in background]`. The
+semantic index is only ever refreshed in that background process, because loading the
+ONNX model costs seconds. Net effect: no `trail build` after a merge.
+
+### Performance: `trail grep` is O(n), not O(files × nodes)
+
+Fixes [#702](https://github.com/trailhq/Trail-Code/issues/702) — `grepGraph` rescanned
+every node per file. Nodes are now pre-indexed by path in a `WeakMap`: O(nodes) once,
+O(1) per lookup. 43s → 1.6s on a 3,700-file repo. PR
+[#713](https://github.com/trailhq/Trail-Code/pull/713) is open upstream.
+
+### Windows
+
+`--ignore-scripts` installs (WASM grammars where a native binding would need a C++
+toolchain), `windowsHide` on every `child_process` call so a build opens no console
+windows, and path handling that survives drive letters and CRLF checkouts.
+
+### Config and indexing
+
+- Build flags persist per repo in `.trail/config.json`; a legacy `.graft/config.json`
+  is migrated once and removed.
+- `--include-md` / `--md-only-dir` index markdown as nodes, so `trail ask` finds a
+  spec's text without opening the file.
+- OpenSpec `openspec/specs/` and `openspec/changes/` are indexed without a flag.
 
 ## Differences from upstream
 
 | | Upstream | This fork |
 |---|---|---|
-| Package name | `@nanonets/graft` | `@detacoop/trail-code` |
-| Semantic search | ❌ | ✅ `graft_search_semantic` MCP tool |
-| grep performance | O(files×nodes) | O(nodes) |
+| Package name | `@trailhq/trail-code` | `trail-code-detacoop` |
+| Semantic search | — | `trail_search_semantic` (ONNX, local) |
+| `trail grep` | O(files × nodes) | O(nodes) |
+| Worktree seeding | `trail build` first | seeded + patched on first query |
+| Freshness | manual `trail build` | automatic, bounded (50 files inline, then background) |
 | Extra deps | — | `@huggingface/transformers`, `better-sqlite3`, `sqlite-vec` |
+| Git writes | hooks, branches, pushes | none: trail only reads git |
 
----
+The fork is a code map and nothing else: no session memory, no shared team repo, no
+hooks, no hosted service. That is deliberate — automatic git writes collided with the
+team's branch protection and MR-only policy, and were the source of most of the
+maintenance.
 
-## Setup
-
-### 1 — Install the fork
-
-> **Note:** uninstall the upstream first if you have it, to avoid binary conflicts.
-> ```bash
-> npm uninstall -g @trailhq/trail-code
-> ```
+## Install
 
 ```bash
+# from npm
+npm install -g trail-code-detacoop --ignore-scripts
+
+# from source
 git clone https://github.com/jastorgaexterno/Trail-Code
 cd Trail-Code
-npm install --ignore-scripts   # skips tree-sitter-kotlin native C++ build (no Visual Studio needed)
-npm run build                  # compile TypeScript → dist/
-npm install -g .               # register trail and graft binaries globally
+npm install --ignore-scripts
+npm run build                  # required: --ignore-scripts skips the prepare hook
+npm install -g . --ignore-scripts
 ```
 
-Verify:
-```bash
-trail --version   # should print 0.28.0-semantic.1
-trail build --help | grep semantic   # should show --semantic flag
-```
-
-### 2 — Build the semantic index
-
-Run this once per repo (or workspace). The first run downloads the embedding model (~87 MB, cached at `~/.cache/huggingface/transformers/`).
+If upstream was installed first, uninstall it to avoid two `trail` binaries:
 
 ```bash
-# Single repo
-trail build --semantic /path/to/your/repo
-
-# Multi-repo workspace (folder with multiple git repos inside)
-trail build --semantic /path/to/your/workspace
+npm uninstall -g @trailhq/trail-code
 ```
 
-Subsequent runs are fast — the index is hash-checked and only re-embeds when the code changes.
+Then, in a repo:
 
-### 3 — Wire into Hermes
-
-Add to `~/.hermes/config.yaml` under `mcp_servers:`:
-
-```yaml
-mcp_servers:
-  trail:
-    command: trail
-    args:
-      - mcp
-      - /path/to/your/workspace   # e.g. C:/Users/jastorga/Desarrollo/default-core
-    env:
-      PYTHONUTF8: "1"
-    enabled: true
+```bash
+trail init                     # AGENTS.md section, .trail/, agent skills
+trail build                    # graph + semantic index (first run downloads the model)
 ```
 
-After restarting Hermes, the following tools are available:
-- `graft_find_code` — ranked lexical search
-- `graft_trace_calls` — call graph traversal
-- `graft_search_semantic` — **semantic vector search** ← new in this fork
-- `graft_find_all`, `graft_file_api`, `graft_repo_map`, `graft_check_freshness`
+## Publishing
 
-### 4 — Use it
-
-```
-graft_search_semantic: { query: "session expiry handling", limit: 5 }
-graft_search_semantic: { query: "manejo de errores de red", limit: 3 }
+```bash
+npm publish --access public --tag latest
 ```
 
-Use `graft_search_semantic` when:
-- `graft_find_code` returns weak results because the code uses different terms
-- You're searching by concept without knowing the symbol name
+`--tag latest` is mandatory for a prerelease version (`0.28.0-semantic.x`). Never
+publish without building first: `--ignore-scripts` skips `prepare`, so a stale `dist/`
+would ship.
 
-Use `graft_find_code` when you already know part of the name — it's faster.
+## Upstream
 
----
+- Grep O(n) fix: [#713](https://github.com/trailhq/Trail-Code/pull/713)
+- Semantic search proposal: [#712](https://github.com/trailhq/Trail-Code/issues/712)
 
-## Upstream PRs
-
-- Grep O(n) fix: [trailhq/Trail-Code#713](https://github.com/trailhq/Trail-Code/pull/713)
-- Semantic search feature request: [trailhq/Trail-Code#712](https://github.com/trailhq/Trail-Code/issues/712)
+MIT, the same as upstream.

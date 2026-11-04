@@ -248,24 +248,6 @@ test('--no-global never reaches outside the repo', () => {
   assert.ok(existsSync(join(home, '.codex', 'hooks', 'graft', 'graft-hooks.cjs')));
 });
 
-test('global sweep strips graft hook entries from Codex hooks.json, keeping foreign ones', () => {
-  const d = fresh();
-  const home = fresh();
-  mkdirSync(join(home, '.codex'), { recursive: true });
-  const cfg = write(home, join('.codex', 'hooks.json'), JSON.stringify({
-    hooks: {
-      PostToolUse: [
-        { hooks: [{ type: 'command', command: 'node "/x/graft-hooks.cjs" post-edit' }] },
-        { hooks: [{ type: 'command', command: 'their-hook.sh' }] },
-      ],
-    },
-  }));
-  runRetract(d, { apply: true, home, global: true });
-  const root = JSON.parse(readFileSync(cfg, 'utf8'));
-  assert.equal(root.hooks.PostToolUse.length, 1);
-  assert.equal(root.hooks.PostToolUse[0].hooks[0].command, 'their-hook.sh');
-});
-
 test('emptied directories are pruned, not left hollow', () => {
   const d = fresh();
   write(d, join('.claude', 'skills', 'graft', 'SKILL.md'), 'skill\n');

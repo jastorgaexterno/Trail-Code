@@ -10,11 +10,8 @@ import { HOSTS, detectHosts, hostRelPath, hostWiringName, type DetectProbe, type
 import { GRAFT_MARKERS, markersFor, upsertSection } from './sections.js';
 import type { Brand } from '../brand.js';
 import { registerMcpConfigs, type McpWrite } from './mcp-config.js';
-import { installCodexHooks } from './codex-hooks.js';
-import { installCursorHooks } from './cursor-hooks.js';
 import type { ConfigWrite } from './config-write.js';
 import { installAntigravitySkill } from './antigravity.js';
-import { rememberInstall } from '../claude/shim-template.js';
 
 export interface HostsInitResult {
   written: { id: string; path: string; action: string }[];
@@ -101,19 +98,9 @@ export function runHostsInit(
     opts.mcp === false
       ? []
       : registerMcpConfigs(repo, selected.map((h) => h.id), { home, global: opts.global, name, laptop: opts.laptop });
-  // The Codex hook targets are user-level (~/.codex), so --no-global suppresses them.
-  const hooks =
-    opts.hooks === false || !outside('agents') || !selected.some((h) => h.id === 'agents')
-      ? []
-      : installCodexHooks(home);
-  // Cursor's hooks are repo-local (.cursor/hooks.json), matching the Cursor-only,
-  // no-global posture — so --no-global does NOT suppress them; only --no-hooks does.
-  const cursorHooks =
-    opts.hooks === false || !selected.some((h) => h.id === 'cursor')
-      ? []
-      : installCursorHooks(repo, name);
-  // Both write the hooks shim, which finds this install through the trail home.
-  if (hooks.length > 0 || cursorHooks.length > 0) rememberInstall(home);
+  // Hooks (Codex/Cursor) removed in trail-solo-grafo change.
+  const hooks: ConfigWrite[] = [];
+  const cursorHooks: ConfigWrite[] = [];
   // Antigravity's skill is a global write too, so --no-global suppresses it as well.
   const antigravitySkill =
     !outside('antigravity') || !selected.some((h) => h.id === 'antigravity')

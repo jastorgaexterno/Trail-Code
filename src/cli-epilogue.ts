@@ -90,7 +90,7 @@ export function formatInitEpilogue(opts: InitEpilogueOptions): string {
     }
   });
 
-  const closing = `${indent}share it: git add .claude && git commit; teammates run \`${cmd("graft build")}\` for their own local graph`;
+  const closing = `${indent}share it: git add AGENTS.md .trail && git commit; teammates run \`${cmd("graft build")}\` for their own local graph`;
 
   return [...wordmark, "", ...stepLines, "", closing].join("\n");
 }

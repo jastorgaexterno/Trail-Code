@@ -14,11 +14,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { EMBED_DIM, _setEmbedderForTest, embedNodes, searchSemantic } from "../src/ask/semantic.js";
 import { buildGraph } from "../src/graph/build.js";
 import { fingerprintPath } from "../src/graph/fingerprint.js";
 import { ensureFreshGraph, refreshNote } from "../src/graph/refresh.js";
+import { discoverWorkspaceChildren } from "../src/graph/scopes.js";
 import { mainWorktreeRoot, seedGraph } from "../src/graph/seed.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { callTool } from "../src/mcp/tools.js";
@@ -338,4 +341,66 @@ test("`graft build` in a worktree starts from the parent's graph, not from scrat
 
   rmSync(main, { recursive: true, force: true });
   rmSync(wt, { recursive: true, force: true });
+});
+
+/* ------------------------------------------------------------------ *
+ * The semantic index travels, and a live worktree is not a repo of its own
+ * ------------------------------------------------------------------ */
+
+/** Deterministic stand-in for the ONNX model: same text → same vector, different
+ * text → a different one. Keeps the whole sqlite-vec round trip real while never
+ * downloading 400 MB in a test. */
+function fakeEmbed(text: string): Float32Array {
+  const h = createHash("sha256").update(text).digest();
+  const v = new Float32Array(EMBED_DIM);
+  for (let i = 0; i < EMBED_DIM; i++) v[i] = ((h[i % 32]! ^ (h[(i + 1) % 32]! << 3)) / 255) * 2 - 1;
+  return v;
+}
+
+test("the parent's vector index is seeded too, so semantic search works on the first query", async () => {
+  const main = gitRepo();
+  await buildGraph(main);
+  _setEmbedderForTest(fakeEmbed);
+  let wt: string | undefined;
+  try {
+    const graph = readGraph(wiringPath(outOf(main)))!;
+    const db = join(outOf(main), ".cache", "embeddings.db");
+    await embedNodes(graph.nodes.filter((n) => n.kind !== "file"), db);
+    assert.equal(existsSync(db), true, "the parent checkout has an index to give");
+
+    wt = addWorktree(main, "semantic");
+    await ensureFreshGraph(wt);
+    const wtDb = join(outOf(wt), ".cache", "embeddings.db");
+    assert.equal(existsSync(wtDb), true, "`embeddings.db` is a seedable sidecar, like the graph");
+
+    // The symptom this prevents: a seeded worktree whose lexical graph is fine and
+    // whose first `trail_search_semantic` throws `Embeddings DB not found`.
+    const hits = await searchSemantic("add two numbers", wtDb, 3);
+    assert.ok(hits.length > 0, "the first semantic query in the worktree answers");
+  } finally {
+    _setEmbedderForTest(null);
+    if (wt) git(main, "worktree", "remove", "--force", wt);
+    rmSync(main, { recursive: true, force: true });
+  }
+});
+
+test("a live worktree is not a workspace child, so the repo is counted once", async () => {
+  const box = tmp("ws");
+  const main = join(box, "backend");
+  mkdirSync(join(main, "src"), { recursive: true });
+  writeFileSync(join(main, "src", "math.ts"), MATH);
+  git(main, "init", "-b", "main");
+  git(main, "add", "-A");
+  git(main, "commit", "-m", "init");
+
+  // The shape the bug was about: the worktree sits beside the repo, so discovery
+  // sees a directory whose `.git` is a *file* — same repo, different branch.
+  const wt = join(box, "backend-task-x");
+  git(main, "worktree", "add", "--detach", wt, "HEAD");
+  try {
+    assert.deepEqual(discoverWorkspaceChildren(box), ["backend"], "the repo appears once, and not as two repos");
+  } finally {
+    git(main, "worktree", "remove", "--force", wt);
+    rmSync(box, { recursive: true, force: true });
+  }
 });

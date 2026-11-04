@@ -4,15 +4,15 @@
  * This is the one piece of graft prose that survives **tool deferral**. When a
  * host has more tools than its schema budget allows, it sends tool *names* only
  * and withholds the JSONSchemas until a `ToolSearch`-style lookup fetches them —
- * measured in a real session: 111 tools deferred, of which graft's six arrived as
- * six bare strings with no descriptions at all. The MCP spec's `instructions`
+ * measured in a real session: 111 tools deferred, of which graft's tools arrived
+ * as bare strings with no descriptions at all. The MCP spec's `instructions`
  * field is delivered on a separate track (Claude Code records it as its own
  * `mcp_instructions_delta` context layer), so it lands whole even then. Other
  * servers already rely on this — `claude-in-chrome` uses it for exactly the
  * batch-your-ToolSearch instruction below; graft used to send nothing.
  *
  * Two jobs, in this order:
- *   1. Defuse the deferral tax. One lookup loads all six tools for the whole
+ *   1. Defuse the deferral tax. One lookup loads the whole tool set for the whole
  *      session, so the cost is a single round trip, not two calls per use. An
  *      agent that doesn't know this can only assume the worse reading.
  *   2. Say what each tool is FOR as a decision rule, not a feature summary —
@@ -32,6 +32,10 @@ const TOOL_ORDER = [
   'graft_trace_calls',
   'graft_file_api',
   'graft_repo_map',
+  'graft_search_semantic',
+  'graft_check_freshness',
+  'graft_set_scope',
+  'graft_build',
 ] as const;
 
 /** The `select:` argument that loads every graft tool in one lookup. */
@@ -42,18 +46,21 @@ export function toolSearchQuery(prefix = `mcp__${brand()}__`): string {
 /** Under trail, the same text with trail's tool names (see brand.ts `inBrand`). */
 export function mcpInstructions(): string {
   return inBrand([
-    'This repo is indexed by graft: a prebuilt graph of every symbol, its file:line',
-    'span, and who calls what. Prefer these tools over grep/read — one call usually',
-    'replaces several file reads.',
+    'graft indexes this repo: every symbol, its file:line span and callers.',
+    'Prefer these tools over grep/read.',
     '',
-    `**If these tools are deferred (names shown, schemas withheld), load them all in ONE lookup:** ToolSearch "${toolSearchQuery()}" — one round trip for the whole session. Never load them one at a time.`,
+    `**Deferred (bare names, no schemas)? Load all in ONE lookup:** ToolSearch "${toolSearchQuery()}" — one round trip, not one call per use.`,
     '',
-    '- graft_find_code — "how does X work" / "where is Y": ranked hits, code inlined.',
-    '- graft_find_all — when you need EVERY occurrence; find_code is top-N and misses some.',
-    '- graft_trace_calls — who calls it, what it calls, blast radius before a rename.',
-    '- graft_file_api — a file\'s whole API in ~200 tokens.',
-    '- graft_repo_map — orientation in an unfamiliar repo.',
+    '- graft_set_scope — set the session scope once',
+    '- graft_find_code — where/how is X; ranked hits',
+    '- graft_find_all — every occurrence',
+    '- graft_trace_calls — callers, callees, blast radius',
+    '- graft_file_api — a file\'s API, ~200 tokens',
+    '- graft_repo_map — orient in a new repo',
+    '- graft_search_semantic — natural-language search',
+    '- graft_check_freshness — is the index stale?',
+    '- graft_build — rebuild graph + embeddings, in background',
     '',
-    'Results already reflect uncommitted edits — the graph refreshes before each query.',
+    'Results include uncommitted edits — the graph refreshes before each query.',
   ].join('\n'));
 }

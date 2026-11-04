@@ -58,18 +58,6 @@ test('claude writes: five in the repo, three in ~ that no .gitignore can eat', (
   assert.ok(globals.every((w) => !w.path.startsWith(repo)), 'nothing global lands in the repo');
 });
 
-test('the three ~/.codex writes are scoped global', () => {
-  const home = fullHome();
-  const agents = planInit(fresh(), { home, ids: ['agents'] })[0];
-  const globals = agents.writes.filter((w) => w.scope === 'global');
-  assert.equal(globals.length, 3);
-  // Real filesystem paths, so compared in posix form rather than the platform's.
-  assert.deepEqual(
-    globals.map((w) => toPosixPath(w.path.slice(home.length))).sort(),
-    ['/.codex/config.toml', '/.codex/hooks.json', '/.codex/hooks/graft/graft-hooks.cjs'],
-  );
-});
-
 test('global writes vanish when the CLI is not installed', () => {
   const agents = planInit(fresh(), { home: fresh(), ids: ['agents'] })[0];
   assert.deepEqual(agents.writes.filter((w) => w.scope === 'global'), []);

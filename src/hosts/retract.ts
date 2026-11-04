@@ -29,10 +29,8 @@ import { homedir } from 'node:os';
 import { HOSTS, hostRelPath } from './registry.js';
 import { ALL_MARKERS, type Markers } from './sections.js';
 import { mcpTargets, stripTomlSection } from './mcp-config.js';
-import { hookTargets } from './codex-hooks.js';
-import { cursorHookTargets } from './cursor-hooks.js';
-import { antigravitySkillTargets } from './antigravity.js';
 import { claudeGlobalTargets } from './claude-global.js';
+import { antigravitySkillTargets } from './antigravity.js';
 import { claudeTargetsFor, legacyClaudeTargets, TRAIL_HOOK, TRAIL_STATUSLINE, trailSkillPath } from '../claude/init.js';
 import { isGraftAllowEntry, isGraftFooterRegex } from '../claude/settings-merge.js';
 import type { WriteScope } from './plan.js';
@@ -393,8 +391,8 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     for (const n of NAMES) for (const t of [...claudeTargetsFor(repo, n, home), ...legacyClaudeTargets(repo, n)]) keptPaths.add(t.path);
     for (const t of claudeGlobalTargets(home)) keptPaths.add(t.path);
   }
-  if (exclude.has('agents')) for (const t of hookTargets(home)) keptPaths.add(t.path);
-  if (exclude.has('cursor')) for (const n of NAMES) for (const t of cursorHookTargets(repo, n)) keptPaths.add(t.path);
+  if (exclude.has('agents')) { /* hookTargets removed in trail-solo-grafo */ }
+  if (exclude.has('cursor')) { /* cursorHookTargets removed in trail-solo-grafo */ }
   if (exclude.has('antigravity')) for (const n of NAMES) for (const t of antigravitySkillTargets(home, n)) keptPaths.add(t.path);
 
   /** Queue a target unless a kept host owns that path, or it's already queued. */
@@ -465,35 +463,20 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     ] as Target[]) add(t);
   }
 
-  // 3b. Cursor's repo-local hooks: the shim under either name, and the entries.
-  if (!exclude.has('cursor')) {
-    for (const n of NAMES) {
-      const [shim, config] = cursorHookTargets(repo, n);
-      add({ hostId: 'cursor', path: shim.path, what: shim.what, scope: 'repo', run: (a) => removeFile(shim.path, a) });
-      add({ hostId: 'cursor', path: config.path, what: config.what, scope: 'repo', run: (a) => stripHookEntries(config.path, a, ['version']) });
-    }
-  }
+  // 3b. Cursor's repo-local hooks: removed in trail-solo-grafo
 
-  // 4. Global: Claude Code's user-level copy, Codex's hook shim + entries, and
-  //    Antigravity's shared skill.
+  // 4. Global: Claude Code's user-level copy and Antigravity's shared skill.
   if (opts.global !== false) {
     if (!exclude.has('claude')) {
       const [shim, settings, mcp] = claudeGlobalTargets(home);
       for (const t of [
-        { hostId: 'claude', path: shim.path, what: shim.what, scope: 'global', run: (a) => removeFile(shim.path, a) },
-        { hostId: 'claude', path: settings.path, what: settings.what, scope: 'global', run: (a) => stripClaudeSettings(settings.path, a) },
-        { hostId: 'claude', path: mcp.path, what: mcp.what, scope: 'global', run: (a) => removeJsonKey(mcp.path, 'mcpServers', a) },
-        { hostId: 'claude', path: trailSkillPath(home), what: 'trail skill', scope: 'global', run: (a) => removeFile(trailSkillPath(home), a) },
+        { hostId: 'claude', path: shim.path, what: shim.what, scope: 'global', run: (a: boolean) => removeFile(shim.path, a) },
+        { hostId: 'claude', path: settings.path, what: settings.what, scope: 'global', run: (a: boolean) => stripClaudeSettings(settings.path, a) },
+        { hostId: 'claude', path: mcp.path, what: mcp.what, scope: 'global', run: (a: boolean) => removeJsonKey(mcp.path, 'mcpServers', a) },
+        { hostId: 'claude', path: trailSkillPath(home), what: 'trail skill', scope: 'global', run: (a: boolean) => removeFile(trailSkillPath(home), a) },
       ] as Target[]) add(t);
     }
-    if (!exclude.has('agents')) {
-      for (const t of hookTargets(home)) {
-        add({
-          hostId: t.hostId, path: t.path, what: t.what, scope: 'global',
-          run: (a) => (t.path.endsWith('.json') ? stripHookEntries(t.path, a) : removeFile(t.path, a)),
-        });
-      }
-    }
+    // agents (Codex) hook targets removed in trail-solo-grafo
     if (!exclude.has('antigravity')) {
       for (const t of NAMES.flatMap((n) => antigravitySkillTargets(home, n))) {
         add({ hostId: t.hostId, path: t.path, what: t.what, scope: 'global', run: (a) => removeFile(t.path, a) });

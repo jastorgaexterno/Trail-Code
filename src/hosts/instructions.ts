@@ -57,8 +57,20 @@ range before finalizing. Only open source files when a node genuinely lacks a
 needed detail, and then at the exact file:line the node points to — never
 re-read whole files.
 
-After big code changes, refresh the graph with \`graft build\` (deterministic,
-no API key, $0).
+**The map keeps itself current.** Every query checks the working tree first and
+re-extracts up to 50 changed files before answering, so an edit you just made is
+already in the graph. More than that (a branch switch, a merge of someone else's
+work) is rebuilt in the background: the answer then starts with
+\`[stale: N files changed, rebuilding in background]\`, which means "this answer
+may predate the change — ask again in a moment". You do not have to run
+\`graft build\` after a merge; run it after a large change when you want the
+markdown cards and \`INDEX.md\` regenerate as well (deterministic, no API key, $0).
+
+**Worktrees need no setup.** A linked git worktree (\`.git\` is a file) has no map
+of its own, because the map lives in the git-ignored cache. The first query
+copies the main checkout's graph in and patches the difference between the two
+branches, so \`graft ask\` in a fresh worktree answers about that worktree's code
+— not the branch the main checkout happens to have. Nothing to run first.
 
 ## Checklist before committing / pushing / opening a PR
 
@@ -68,11 +80,10 @@ Run **in this order** before the first push on any branch:
 <typecheck>                              # e.g. tsc -b (TS), go vet, cargo check, mypy
 <lint>                                   # e.g. bun run lint / npm run lint
 <tests>                                  # e.g. npx vitest run <module>
-graft check --base origin/<base-branch>  # blast radius: conflicts with other branches + learnings
 \`\`\`
 
-\`graft check\` goes **last**, before the push — not after opening the PR.
-If it surfaces overlap with another active branch, mention it in the MR/PR description.`;
+The code map is not a gate: it refreshes itself on the query path, so there is no
+\`build\`/\`check\` step to forget before a push.`;
 }
 
 export function cursorRule(name: Brand = 'graft'): string {

@@ -26,10 +26,8 @@ import { trailSpelling } from '../src/claude/skill-template.js';
 import { GRAFT_MARKERS, TRAIL_MARKERS, fencedBlock, upsertSection } from '../src/hosts/sections.js';
 import { registerMcpConfigs, serverEntry } from '../src/hosts/mcp-config.js';
 import { changed, runRetract } from '../src/hosts/retract.js';
-import { runInit } from '../src/claude/init.js';
-import { runUpkeep } from '../src/upkeep-run.js';
-import { readStamp, runningVersion, wiredHostIds } from '../src/upkeep.js';
-import { BRAND_ENV, commandOnPath } from '../src/brand.js';
+import { wiredHostIds } from '../src/upkeep.js';
+import { commandOnPath } from '../src/brand.js';
 import { tmpRepo } from './helpers.js';
 
 const ALL = HOSTS.map((h) => h.id);
@@ -78,92 +76,6 @@ test('the instruction text under trail names trail commands only; under graft it
   assert.equal(instructionBody('graft'), instructionBody());
   assert.match(instructionBody(), /^## Graft — repo context graph/);
 });
-
-test('trail init for every agent: trail-named files, trail commands, a trail server', () => {
-  const home = agentHome();
-  const repo = tmpRepo('trail-hosts');
-  const r = runHostsInit(repo, { all: true, home, brand: 'trail' });
-  assert.equal(r.written.length, ALL.length);
-
-  const files = filesUnder(repo);
-  assert.deepEqual(files.filter((f) => /\bgraft\b/.test(f)), [], `no graft-named file in the repo: ${files.join(', ')}`);
-  for (const rel of [
-    join('.cursor', 'rules', 'trail.mdc'),
-    join('.cursor', 'hooks', 'trail-hooks.cjs'),
-    join('.kiro', 'steering', 'trail.md'),
-    join('.windsurf', 'rules', 'trail.md'),
-    join('.adal', 'skills', 'trail', 'SKILL.md'),
-    join('.grok', 'skills', 'trail', 'SKILL.md'),
-  ]) assert.ok(files.includes(rel), `${rel} written`);
-
-  // Every instruction file tells the agent to run trail, never graft.
-  for (const host of HOSTS) {
-    const text = readFileSync(join(repo, hostRelPath(host, 'trail')), 'utf8');
-    assert.doesNotMatch(text, GRAFT_COMMAND, `${host.id} names a graft command`);
-    assert.match(text, /\btrail (ask|grep)\b/, `${host.id} names trail's`);
-  }
-  const agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
-  assert.equal(agents.split(TRAIL_MARKERS.start).length - 1, 1, 'one block, shared by three hosts');
-  assert.ok(!agents.includes(GRAFT_MARKERS.start));
-  assert.match(readFileSync(join(repo, '.adal', 'skills', 'trail', 'SKILL.md'), 'utf8'), /^---\nname: trail\n/);
-
-  // The MCP server is trail's, under trail's name, in every config.
-  const npx = { command: 'npx', args: ['-y', '@trailhq/trail-code', 'mcp'] };
-  for (const rel of [join('.cursor', 'mcp.json'), join('.gemini', 'settings.json'), join('.kiro', 'settings', 'mcp.json')]) {
-    assert.deepEqual(JSON.parse(readFileSync(join(repo, rel), 'utf8')).mcpServers, { trail: npx }, rel);
-  }
-  assert.deepEqual(JSON.parse(readFileSync(join(repo, 'opencode.json'), 'utf8')).mcp, { trail: { type: 'local', command: ['npx', '-y', '@trailhq/trail-code', 'mcp'], enabled: true } });
-  assert.deepEqual(JSON.parse(readFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), 'utf8')).mcpServers, { trail: npx });
-  for (const toml of [join(repo, '.grok', 'config.toml'), join(home, '.codex', 'config.toml')]) {
-    assert.equal(readFileSync(toml, 'utf8'), '[mcp_servers.trail]\ncommand = "npx"\nargs = ["-y", "@trailhq/trail-code", "mcp"]\n', toml);
-  }
-  assert.ok(existsSync(join(home, '.gemini', 'skills', 'trail', 'SKILL.md')));
-  assert.ok(!existsSync(join(home, '.gemini', 'skills', 'graft')));
-  const hooks = JSON.parse(readFileSync(join(repo, '.cursor', 'hooks.json'), 'utf8'));
-  assert.match(hooks.hooks.postToolUse[0].command, /trail-hooks\.cjs" cursor-post-tool \|\| exit 0$/);
-
-  // A teammate on graft refreshing the same repo writes the same files: it never flips back.
-  assert.equal(hostWiringName(repo), 'trail');
-  const again = runHostsInit(repo, { all: true, home });
-  assert.ok(again.written.every((w) => w.action === 'unchanged'), JSON.stringify(again.written));
-  assert.ok(again.mcp.every((w) => w.action === 'unchanged'), JSON.stringify(again.mcp));
-});
-
-test('a graft-wired repo moved to trail keeps one copy of everything, under trail', () => {
-  const home = agentHome();
-  const repo = tmpRepo('graft-to-trail-hosts');
-  writeFileSync(join(repo, 'AGENTS.md'), '# House rules\n\nBe kind.\n');
-  runHostsInit(repo, { all: true, home });
-  assert.ok(readFileSync(join(repo, 'AGENTS.md'), 'utf8').includes(GRAFT_MARKERS.start), 'wired as graft');
-  assert.equal(hostWiringName(repo), 'graft');
-
-  runHostsInit(repo, { all: true, home, brand: 'trail' });
-  const files = filesUnder(repo);
-  assert.deepEqual(files.filter((f) => /\bgraft\b/.test(f)), [], `graft's copies are gone: ${files.join(', ')}`);
-  assert.ok(!existsSync(join(repo, '.adal', 'skills', 'graft')), 'and their folders');
-  const agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
-  assert.equal(agents, `# House rules\n\nBe kind.\n\n${fencedBlock(instructionBody('trail'), '\n', TRAIL_MARKERS)}\n`, 'the graft block became the trail one, in place');
-  for (const rel of ['GEMINI.md', join('.github', 'copilot-instructions.md')]) {
-    const text = readFileSync(join(repo, rel), 'utf8');
-    assert.ok(!text.includes(GRAFT_MARKERS.start) && text.split(TRAIL_MARKERS.start).length === 2, rel);
-  }
-  for (const rel of [join('.cursor', 'mcp.json'), join('.gemini', 'settings.json'), join('.kiro', 'settings', 'mcp.json')]) {
-    assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(repo, rel), 'utf8')).mcpServers), ['trail'], rel);
-  }
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(repo, 'opencode.json'), 'utf8')).mcp), ['trail']);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), 'utf8')).mcpServers), ['trail']);
-  for (const toml of [join(repo, '.grok', 'config.toml'), join(home, '.codex', 'config.toml')]) {
-    const text = readFileSync(toml, 'utf8');
-    assert.ok(!text.includes('[mcp_servers.graft]') && text.includes('[mcp_servers.trail]'), toml);
-  }
-  assert.ok(!existsSync(join(home, '.gemini', 'skills', 'graft')));
-  const hooks = JSON.parse(readFileSync(join(repo, '.cursor', 'hooks.json'), 'utf8'));
-  for (const [event, entries] of Object.entries<unknown[]>(hooks.hooks)) {
-    assert.equal(entries.length, 1, `${event}: one entry`);
-    assert.match(JSON.stringify(entries), /trail-hooks\.cjs/);
-  }
-});
-
 test('a file holding both blocks keeps one: trail\'s, where trail\'s was', () => {
   const dir = tmpRepo('both-blocks');
   const graft = fencedBlock('old graft text', '\n', GRAFT_MARKERS);
@@ -220,39 +132,27 @@ test('uninstall removes the wiring under either name, keeping the user\'s words'
   assert.deepEqual(changed(runRetract(repo, { home, apply: true })), [], 'a second sweep finds nothing');
 });
 
-test('a session start that moves a graft repo to trail moves the other agents too', () => {
+test('wiring a graft repo under trail moves the other agents too', () => {
   const repo = tmpRepo('move-hosts');
-  spawnSync('git', ['init', '-q'], { cwd: repo });
   const home = mkdtempSync(join(tmpdir(), 'move-hosts-home-'));
-  const saved = { PATH: process.env.PATH, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TRAIL_HOME: process.env.TRAIL_HOME, [BRAND_ENV]: process.env[BRAND_ENV] };
-  Object.assign(process.env, { HOME: home, USERPROFILE: home, TRAIL_HOME: join(home, '.trail') });
-  try {
-    delete process.env[BRAND_ENV];
-    runInit(repo, { build: false, global: false });
-    runHostsInit(repo, { agents: ['agents', 'cursor', 'gemini', 'kiro'], home, global: false });
-    runUpkeep(repo, runningVersion(), { background: false, home });
-    const hosts = readStamp(repo)?.hosts;
-    assert.deepEqual(hosts, ['agents', 'antigravity', 'claude', 'cursor', 'gemini', 'hermes', 'kiro'], 'AGENTS.md reads as all three of its hosts');
+  const agents = ['agents', 'cursor', 'gemini', 'kiro'];
+  // A teammate on graft wired these first; trail then rewrites the same hosts.
+  runHostsInit(repo, { agents, home, global: false, brand: 'graft' });
+  runHostsInit(repo, { agents, home, global: false, brand: 'trail' });
 
-    const bin = mkdtempSync(join(tmpdir(), 'bin-trail-'));
-    writeFileSync(join(bin, 'trail'), '#!/bin/sh\nexit 0\n');
-    chmodSync(join(bin, 'trail'), 0o755);
-    process.env.PATH = `${bin}${delimiter}${saved.PATH}`;
-    assert.match(runUpkeep(repo, runningVersion(), { background: false, home }).lines.join('\n'), /just moved to it/);
-
-    const files = filesUnder(repo);
-    assert.deepEqual(files.filter((f) => /\bgraft\b/.test(f)), [], `nothing graft-named left: ${files.join(', ')}`);
-    for (const rel of ['AGENTS.md', 'GEMINI.md', join('.cursor', 'rules', 'trail.mdc'), join('.kiro', 'steering', 'trail.md')]) {
-      const text = readFileSync(join(repo, rel), 'utf8');
-      assert.doesNotMatch(text, GRAFT_COMMAND, rel);
-      assert.ok(!text.includes(GRAFT_MARKERS.start), `${rel}: no graft block left`);
-    }
-    assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(repo, '.cursor', 'mcp.json'), 'utf8')).mcpServers), ['trail']);
-    assert.deepEqual(wiredHostIds(repo).sort(), hosts, 'the same agents, found under trail\'s names');
-    assert.doesNotMatch(runUpkeep(repo, runningVersion(), { background: false, home }).lines.join('\n'), /just moved/, 'once');
-  } finally {
-    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  const files = filesUnder(repo);
+  assert.deepEqual(files.filter((f) => /\bgraft\b/.test(f)), [], `nothing graft-named left: ${files.join(', ')}`);
+  for (const rel of ['AGENTS.md', 'GEMINI.md', join('.cursor', 'rules', 'trail.mdc'), join('.kiro', 'steering', 'trail.md')]) {
+    const text = readFileSync(join(repo, rel), 'utf8');
+    assert.doesNotMatch(text, GRAFT_COMMAND, rel);
+    assert.ok(!text.includes(GRAFT_MARKERS.start), `${rel}: no graft block left`);
   }
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(repo, '.cursor', 'mcp.json'), 'utf8')).mcpServers), ['trail']);
+  assert.deepEqual(
+    wiredHostIds(repo).sort(),
+    [...agents, 'antigravity', 'hermes'].sort(),
+    'the same agents, found under trail\'s names',
+  );
 });
 
 test('CLI: trail init --dry-run names trail\'s files', () => {

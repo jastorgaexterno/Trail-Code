@@ -54,14 +54,6 @@ test('preserves user content around the fenced section', () => {
   assert.ok(text.includes('graft ask'));
 });
 
-test('CLI: graft init --agents gemini writes GEMINI.md and exits 0', () => {
-  const repo = fresh();
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'gemini'], {
-    encoding: 'utf8',
-  });
-  assert.ok(readFileSync(join(repo, 'GEMINI.md'), 'utf8').includes('graft ask'));
-});
-
 test('CLI: unknown agent id exits non-zero', () => {
   const repo = fresh();
   assert.throws(() =>
@@ -122,21 +114,6 @@ test('mcp: false skips MCP registration', () => {
   assert.ok(!existsSync(join(repo, '.cursor', 'mcp.json')));
 });
 
-test('CLI: --no-mcp writes the rule file but no MCP config', () => {
-  const repo = fresh();
-  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'cursor', '--no-mcp'], { encoding: 'utf8' });
-  assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
-  assert.ok(!existsSync(join(repo, '.cursor', 'mcp.json')));
-});
-
-test('runHostsInit installs hooks for the agents id when the CLI home exists', () => {
-  const home = fresh(); const repo = fresh();
-  mkdirSync(join(home, '.codex'), { recursive: true });
-  const r = runHostsInit(repo, { home, agents: ['agents'] });
-  assert.equal(r.hooks.length, 2);
-  assert.ok(existsSync(join(home, '.codex', 'hooks', 'graft', 'graft-hooks.cjs')));
-});
-
 test('hooks: false skips hook installation', () => {
   const home = fresh(); const repo = fresh();
   mkdirSync(join(home, '.codex'), { recursive: true });
@@ -188,42 +165,6 @@ test('CLI: no flags and no TTY writes nothing and names the detected agents', ()
   assert.deepEqual(readdirSync(repo), []);
 });
 
-test('CLI: --dry-run prints the plan, both sections, and writes nothing', () => {
-  const home = fresh(); const repo = fresh();
-  mkdirSync(join(home, '.codex'), { recursive: true });
-  const out = cliStderr(repo, home, ['--dry-run']);
-
-  assert.match(out, /would write in this repo:/);
-  // The plan prints display paths, which keep the platform separator.
-  assert.ok(out.includes(join('.claude', 'settings.json')), out);
-  assert.match(out, /AGENTS\.md/);
-  assert.match(out, /affects ALL repos:/);
-  assert.ok(out.includes(`~${sep}${join('.codex', 'hooks.json')}`), out);
-  assert.match(out, /nothing was written/);
-
-  assert.deepEqual(readdirSync(repo), []);
-  assert.ok(!existsSync(join(home, '.codex', 'hooks.json')));
-});
-
-test('CLI: --yes wires every detected agent (the pre-0.8 default)', () => {
-  const home = fresh(); const repo = fresh();
-  mkdirSync(join(home, '.cursor'));
-  cliStderr(repo, home, ['--yes']);
-  assert.ok(existsSync(join(repo, '.claude', 'settings.json')));
-  assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
-  // gemini was never installed in this scratch home, so it is not wired.
-  assert.ok(!existsSync(join(repo, 'GEMINI.md')));
-});
-
-test('CLI: --no-global writes AGENTS.md but leaves ~/.codex alone', () => {
-  const home = fresh(); const repo = fresh();
-  mkdirSync(join(home, '.codex'), { recursive: true });
-  const out = cliStderr(repo, home, ['--agents', 'agents', '--no-global', '--verbose']);
-  assert.ok(existsSync(join(repo, 'AGENTS.md')));
-  assert.deepEqual(readdirSync(join(home, '.codex')), []);
-  assert.match(out, /skipped out-of-repo writes/);
-});
-
 test('CLI: the graph build is attempted even when claude is not selected', () => {
   const home = fresh(); const repo = fresh();
   mkdirSync(join(home, '.cursor'));
@@ -231,15 +172,6 @@ test('CLI: the graph build is attempted even when claude is not selected', () =>
   // cursor wired .cursor/ and never built the graph its rule file points at.
   const out = cliStderr(repo, home, ['--agents', 'cursor']);
   assert.match(out, /(built the graph|graph built|skipped graph build|skipped the graph build)/);
-});
-
-test('CLI: --no-global stays quiet when the selection has nothing out-of-repo', () => {
-  const home = fresh(); const repo = fresh();
-  mkdirSync(join(home, '.codex'), { recursive: true });
-  // cursor writes only inside the repo, so there is nothing for --no-global to skip.
-  const out = cliStderr(repo, home, ['--agents', 'cursor', '--no-global']);
-  assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
-  assert.doesNotMatch(out, /skipped out-of-repo writes/);
 });
 
 test('CLI: --dry-run respects an explicit --agents list', () => {

@@ -8,9 +8,10 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { buildGraph } from "../src/graph/build.js";
-import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "../src/graph/refresh.js";
+import { DRIFT_INLINE_MAX, ensureFreshChildren, ensureFreshGraph, refreshNote } from "../src/graph/refresh.js";
 import { extractCachePath } from "../src/graph/extract-cache.js";
 import { fingerprintPath, isClean, probeDrift } from "../src/graph/fingerprint.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
@@ -431,6 +432,164 @@ test("callTool refreshes before answering — except for graft_check_freshness",
   assert.ok(!again.text.startsWith("[graft] refreshed"), "nothing moved — no note, no rebuild");
 });
 
+// ── the drift threshold: small patches answer, big ones repair behind you ───
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** A one-function file whose *symbol name* carries `tag`, so a rewrite is visible
+ * in the graph as one id replacing another. */
+const fn = (i: number, tag: string): string =>
+  `export function ${tag}${i}(): string {\n  return "${tag}";\n}\n`;
+
+/** `n` source files, so a branch-sized diff can be produced on demand. */
+function wideRepo(n: number): string {
+  const d = mkdtempSync(join(tmpdir(), "graft-drift-"));
+  mkdirSync(join(d, "src"), { recursive: true });
+  for (let i = 0; i < n; i++) writeFileSync(join(d, "src", `f${i}.ts`), fn(i, "old"));
+  return d;
+}
+
+/** Rewrite the first `n` files so every one of them is real drift. */
+function rewrite(d: string, n: number, tag: string): void {
+  for (let i = 0; i < n; i++) writeFileSync(join(d, "src", `f${i}.ts`), fn(i, tag));
+}
+
+/** Logs its argv and does nothing else — for the cases that assert a job was
+ * started, not what it did. */
+function recordingStub(): { log: string; restore: () => void } {
+  const box = stubBox();
+  const stub = join(box, "record-run-stub.mjs");
+  const log = join(box, "record-run-runs.log");
+  writeFileSync(
+    stub,
+    `import { appendFileSync } from "node:fs";
+const [job, dir, out, timeout] = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ job, dir, out, timeout }) + "\\n");
+`,
+  );
+  process.env.GRAFT_TEST_BUILD_RUN = stub;
+  return { log, restore: () => { delete process.env.GRAFT_TEST_BUILD_RUN; } };
+}
+
+/**
+ * Stands in for the compiled `build-run.js` by running the *real* job through tsx.
+ *
+ * The point of the threshold is that the repair actually lands, so a stub that
+ * copies a graph in or only logs would assert nothing: this one drives the same
+ * `main()` the binary runs, with the same lock handover.
+ */
+function realRunnerStub(): { log: string; restore: () => void } {
+  const box = stubBox();
+  const stub = join(box, "build-run-stub.mjs");
+  const log = join(box, "build-run-runs.log");
+  const runner = fileURLToPath(new URL("../src/graph/build-run.ts", import.meta.url));
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  writeFileSync(
+    stub,
+    `import { appendFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+const [job, dir, out, timeout] = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ job, dir, out, timeout }) + "\\n");
+execFileSync(process.execPath, ["--import", "tsx", ${JSON.stringify(runner)}, job, dir, out, timeout], { stdio: "ignore", cwd: ${JSON.stringify(root)} });
+`,
+  );
+  process.env.GRAFT_TEST_BUILD_RUN = stub;
+  return { log, restore: () => { delete process.env.GRAFT_TEST_BUILD_RUN; } };
+}
+
+test("exactly DRIFT_INLINE_MAX changed files are still patched before answering", async () => {
+  const d = wideRepo(DRIFT_INLINE_MAX);
+  await buildGraph(d);
+  rewrite(d, DRIFT_INLINE_MAX, "new");
+
+  const started = Date.now();
+  const r = await ensureFreshGraph(d);
+  assert.equal(r.refreshed, true, "the boundary is inclusive: 50 still answers from a current graph");
+  assert.equal(r.stale, undefined);
+  assert.equal(hasSymbol(d, "src/f0.ts#new0"), true);
+  assert.match(refreshNote(r) ?? "", /^\[graft\] refreshed the graph \(50 files changed\)/);
+  assert.ok(Date.now() - started < 120_000);
+});
+
+test("drift above the threshold answers at once with a stale warning, then repairs in background", async () => {
+  const d = wideRepo(60);
+  await buildGraph(d);
+  rewrite(d, 51, "new");
+  const { log, restore } = realRunnerStub();
+  try {
+    const r = await ensureFreshGraph(d);
+    assert.equal(r.refreshed, false, "the query does not wait for a branch-sized rebuild");
+    assert.equal(r.stale, 51);
+    assert.equal(refreshNote(r), "[stale: 51 files changed, rebuilding in background]");
+    // Stale means exactly this: the graph on disk still describes the old code.
+    assert.equal(hasSymbol(d, "src/f0.ts#old0"), true);
+    assert.equal(hasSymbol(d, "src/f0.ts#new0"), false);
+
+    // The background process repairs it; nothing else has to be run by hand.
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !hasSymbol(d, "src/f0.ts#new0")) await sleep(100);
+    assert.equal(hasSymbol(d, "src/f0.ts#new0"), true, "the background rebuild landed");
+    assert.equal(hasSymbol(d, "src/f0.ts#old0"), false);
+
+    const after = await ensureFreshGraph(d);
+    assert.equal(refreshNote(after), null, "a query after the rebuild answers fresh, with no warning");
+    assert.deepEqual((await runsIn(log)).map((x) => x.job), ["graph"], "one background job, not one per query");
+  } finally {
+    restore();
+  }
+});
+
+test("a second query during a large rebuild neither blocks nor starts a second one", async () => {
+  const d = wideRepo(60);
+  await buildGraph(d);
+  rewrite(d, 51, "new");
+  // A job that holds the lock and never finishes within this test: the standing
+  // process is what the second query must notice.
+  const { log, restore } = firstBuildStub("hold");
+  try {
+    const first = await ensureFreshGraph(d);
+    assert.equal(first.stale, 51);
+    const second = await ensureFreshGraph(d);
+    assert.equal(second.stale, 51, "still reported stale — and still no wait");
+    assert.deepEqual((await runsIn(log)).map((x) => x.job), ["graph"], "the lock kept the second query from piling on");
+  } finally {
+    releaseLock(d);
+    restore();
+  }
+});
+
+test("an inline patch refreshes the vector index out of process, and only when one exists", async () => {
+  const d = repo();
+  await buildGraph(d);
+  writeFileSync(join(d, "src", "math.ts"), `${MATH}${MUL}`);
+
+  // No index on disk: a lexical edit must not start a 400 MB model download.
+  const cold = recordingStub();
+  try {
+    const r = await ensureFreshGraph(d);
+    assert.equal(r.refreshed, true);
+    assert.equal(existsSync(join(outOf(d), ".cache", "embeddings.db")), false, "the answering process loaded no model");
+    assert.deepEqual(await runsIn(cold.log), [], "and started nothing");
+  } finally {
+    cold.restore();
+  }
+
+  // With one, the refresh keeps it current — in a child, never in this process.
+  writeFileSync(join(outOf(d), ".cache", "embeddings.db"), "placeholder");
+  const warm = recordingStub();
+  try {
+    writeFileSync(join(d, "src", "math.ts"), `${MATH}${MUL}export const Z = 3;\n`);
+    const r = await ensureFreshGraph(d);
+    assert.equal(r.refreshed, true);
+    const runs = await runsIn(warm.log);
+    assert.deepEqual(runs.map((x) => x.job), ["embed"], "the semantic refresh is handed off, not awaited");
+    assert.equal(runs[0]!.out, outOf(d));
+  } finally {
+    warm.restore();
+  }
+});
+
+
 test("a process killed while holding the lock releases it", async (t) => {
   // Windows has no SIGTERM: `child.kill()` there calls TerminateProcess, so no
   // handler runs and nothing can release the lock on the way out. The safety net on
@@ -491,22 +650,28 @@ function trailRepo(): string {
 }
 const trailOut = (d: string): string => join(d, ".trail", "cache");
 
+/** Where a stand-in script and its log live: outside the repo under test, or the
+ * `.mjs` file itself becomes drift and quietly changes what a test measures. */
+function stubBox(): string {
+  return mkdtempSync(join(tmpdir(), "graft-stub-"));
+}
+
 /**
- * Stands in for `claude/sync-run.js`, which runs the first build detached. It logs
- * its argv, then holds the lock a while (`hold`), puts back a map the test built
- * and moved aside (`copy`), or gives up (`fail`), and releases the lock as the
- * real one does.
+ * Stands in for `dist/graph/build-run.js` on the first-build path. It logs its
+ * argv, then holds the lock a while (`hold`), puts back a map the test built and
+ * moved aside (`copy`), or gives up (`fail`), and releases the lock as the real
+ * one does.
  */
-function firstBuildStub(d: string, mode: "hold" | "copy" | "fail", from = ""): { log: string; restore: () => void } {
-  const stub = join(d, "first-build-stub.mjs");
-  const log = join(d, "first-build-runs.log");
+function firstBuildStub(mode: "hold" | "copy" | "fail", from = ""): { log: string; restore: () => void } {
+  const box = stubBox();
+  const stub = join(box, "first-build-stub.mjs");
+  const log = join(box, "first-build-runs.log");
   writeFileSync(
     stub,
     `import { appendFileSync, cpSync, rmSync } from "node:fs";
 import { join } from "node:path";
-const [dir, timeout] = process.argv.slice(2);
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({ dir, timeout }) + "\\n");
-const out = join(dir, ".trail", "cache");
+const [job, dir, out, timeout] = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ job, dir, out, timeout }) + "\\n");
 const done = () => rmSync(join(out, ".cache", ".sync.lock"), { force: true });
 if (${JSON.stringify(mode)} === "hold") setTimeout(done, 3000);
 else {
@@ -515,19 +680,19 @@ else {
 }
 `,
   );
-  process.env.GRAFT_TEST_SYNC_RUN = stub;
-  return { log, restore: () => { delete process.env.GRAFT_TEST_SYNC_RUN; } };
+  process.env.GRAFT_TEST_BUILD_RUN = stub;
+  return { log, restore: () => { delete process.env.GRAFT_TEST_BUILD_RUN; } };
 }
 
 /** The builds the stub was started for, once it has had a moment to log them. */
-async function runsIn(log: string): Promise<Array<{ dir: string; timeout: string }>> {
+async function runsIn(log: string): Promise<Array<{ job: string; dir: string; out: string; timeout: string }>> {
   for (let i = 0; i < 40 && !existsSync(log); i++) await new Promise((r) => setTimeout(r, 50));
-  return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+  return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
 }
 
 test("a repo on trail with no map: the first query starts one build, and a hook's query doesn't wait for it", async () => {
   const d = trailRepo();
-  const { log, restore } = firstBuildStub(d, "hold");
+  const { log, restore } = firstBuildStub("hold");
   try {
     const started = Date.now();
     const r = await ensureFreshGraph(d, { firstBuildWaitMs: 0 });
@@ -557,7 +722,7 @@ test("the first query waits for that build, then answers from the new map", asyn
   assert.ok(existsSync(wiringPath(trailOut(d))), "a repo on trail builds into .trail/cache");
   const built = join(mkdtempSync(join(tmpdir(), "graft-built-")), "cache");
   renameSync(trailOut(d), built);
-  const { log, restore } = firstBuildStub(d, "copy", built);
+  const { log, restore } = firstBuildStub("copy", built);
   try {
     const r = await ensureFreshGraph(d, { firstBuildWaitMs: 10_000 });
     assert.equal((await runsIn(log)).length, 1);
@@ -571,7 +736,7 @@ test("the first query waits for that build, then answers from the new map", asyn
 
 test("a first build that ends without a map says so, rather than waiting on", async () => {
   const d = trailRepo();
-  const { restore } = firstBuildStub(d, "fail");
+  const { restore } = firstBuildStub("fail");
   try {
     const started = Date.now();
     const r = await ensureFreshGraph(d, { firstBuildWaitMs: 10_000 });
@@ -584,7 +749,7 @@ test("a first build that ends without a map says so, rather than waiting on", as
 
 test("outside a repo on trail, under --dir, or in the home folder, no map is built behind the user's back", async () => {
   const plain = repo();
-  const { log, restore } = firstBuildStub(plain, "fail");
+  const { log, restore } = firstBuildStub("fail");
   const home = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
   try {
     assert.equal((await ensureFreshGraph(plain, { firstBuildWaitMs: 0 })).note, undefined);

@@ -12,8 +12,6 @@ import { homedir } from 'node:os';
 import { statSync } from 'node:fs';
 import { HOSTS, detectHosts, hostRelPath, hostWiringName, type DetectProbe, type HostTarget } from './registry.js';
 import { mcpTargets } from './mcp-config.js';
-import { hookTargets } from './codex-hooks.js';
-import { cursorHookTargets } from './cursor-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeTargets } from '../claude/init.js';
 import { brand, type Brand } from '../brand.js';
@@ -84,8 +82,6 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[] } =
       writes: [
         instructionTarget(repo, host, name),
         ...mcpTargets(repo, [host.id], { home, name }),
-        ...(host.id === 'agents' ? hookTargets(home) : []),
-        ...(host.id === 'cursor' ? cursorHookTargets(repo, name) : []),
         ...(host.id === 'antigravity' ? antigravitySkillTargets(home, name) : []),
       ],
     })),

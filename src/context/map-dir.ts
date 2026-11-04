@@ -14,10 +14,21 @@
  */
 import { WINHIDE } from "../util/child-process.js";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { repoWiredForTrail } from "../brand.js";
-import { ignoreInTrailDir } from "../notes/repo-trail.js";
+
+/** Write `entry` into `.trail/.gitignore` so the cache stays out of git. */
+function ignoreInTrailDir(root: string, entry: string): void {
+  const trailDir = join(root, '.trail');
+  mkdirSync(trailDir, { recursive: true });
+  const giPath = join(trailDir, '.gitignore');
+  let current = '';
+  try { current = readFileSync(giPath, 'utf8'); } catch { /* new file */ }
+  if (!current.split('\n').some(l => l.trim() === entry.trim())) {
+    writeFileSync(giPath, current ? `${current.trimEnd()}\n${entry}\n` : `${entry}\n`);
+  }
+}
 
 /** The map's folder in a repo on trail, relative to the repo. */
 export const TRAIL_MAP_DIR = join(".trail", "cache");

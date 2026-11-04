@@ -54,7 +54,9 @@ test("init at a workspace parent wires every child repo, not just the parent", (
   for (const dir of [parent, join(parent, "assign"), join(parent, "app.nanonets")]) {
     assert.ok(existsSync(join(dir, ".claude", "settings.json")), `${dir} settings.json`);
     assert.ok(existsSync(join(dir, ".claude", "skills", "graft", "SKILL.md")), `${dir} skill`);
-    assert.ok(existsSync(join(dir, ".claude", "helpers", "graft-hooks.cjs")), `${dir} hooks shim`);
+    // The hooks shim is not written any more (openspec change trail-solo-grafo): the
+    // hooks were the vehicle for the layer that change removed.
+    assert.equal(existsSync(join(dir, ".claude", "helpers", "graft-hooks.cjs")), false, `${dir} no hooks shim`);
     const mcp = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"));
     assert.ok(mcp.mcpServers?.graft, `${dir} .mcp.json registers graft`);
   }

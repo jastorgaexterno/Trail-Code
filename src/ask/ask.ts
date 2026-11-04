@@ -49,7 +49,6 @@ import {
 import { readSourceFile } from "../util/source.js";
 import { counts, tokenize, type AskIndex, type AskIndexDoc } from "./index-file.js";
 import { cmd, tag } from "../brand.js";
-import { formatNoteHits, learningSavingsLine, type NoteHit } from "../notes/notes.js";
 
 export interface AskHit {
   kind: "concept" | "symbol" | "caller" | "callee";
@@ -108,9 +107,6 @@ export interface AskResult {
    * callers must not re-sort this list by `score`. */
   hits: AskHit[];
   note?: string;
-  /** Past sessions' notes (notes/home.ts) that bear on this query, best first.
-   *  Set by `attachNotes` (notes/ask-notes.ts), never by the ranker. */
-  notes?: NoteHit[];
   /** The repo keeps notes on this machine, so an empty `notes` means "none
    *  about this yet" rather than "this repo keeps no notes". */
   notesChecked?: boolean;
@@ -1503,18 +1499,10 @@ function renderAsk(r: AskResult): { body: string } | { text: string } {
         .map((l) => (l.startsWith("structural index:") ? `⚠ ${l}` : l))
         .join("\n")
     : "";
-  // Notes go first: a decision a past session already made, or an approach it
-  // already ruled out, changes how the code below should be read.
-  const teamNotes = r.notes?.length
-    ? formatNoteHits(r.notes)
-    : r.notesChecked
-      ? ["· no learnings about this yet", ""]
-      : [];
-  const learned = r.notes?.length ? learningSavingsLine(r.notes) : null;
-  if (learned) teamNotes.push(learned, "");
+  // Notes go first was here; learnings removed.
+  const teamNotes: string[] = [];
   if (r.notesHint) teamNotes.push(r.notesHint, "");
   if (r.hits.length === 0) {
-    if (r.notes?.length) return { text: `${head}\n\n${teamNotes.join("\n").trimEnd()}\n\n${noteBlock || "no code matches."}${escalationNudge(r)}\n` };
     return { text: `${head}\n\n${noteBlock || "no matches."}${escalationNudge(r)}\n` };
   }
   const lines = noteBlock ? [head, "", noteBlock, "", ...teamNotes] : [head, "", ...teamNotes];

@@ -27,9 +27,6 @@
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { hooksShim } from '../claude/shim-template.js';
-import { mergeGraftHooks } from '../claude/settings-merge.js';
-import { toPosixPath } from '../util/paths.js';
 import { readJsonObject, writeOwned, type ConfigWrite } from './config-write.js';
 import { mergeJsonKey, serverEntry } from './mcp-config.js';
 import type { PlannedWrite } from './plan.js';
@@ -66,63 +63,23 @@ export function claudeGlobalTargets(home: string, brand: Brand = 'graft'): Plann
   return brand === 'trail' ? writes.slice(0, 2) : writes;
 }
 
-/** Merge graft's hook blocks into a settings file, preserving everything else. */
-function upsertGlobalHooks(id: string, path: string, helpers: string): GlobalWrite {
-  const loaded = readJsonObject(path);
-  if (loaded === 'unparseable') return { id, path, action: 'skipped-unparseable' };
-  const { root: existing, existed } = loaded;
-  const before = JSON.stringify(existing);
-  const { merged } = mergeGraftHooks(existing, helpers);
-  if (JSON.stringify(merged) === before) return { id, path, action: 'unchanged' };
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`);
-  return { id, path, action: existed ? 'updated' : 'created' };
+/** Hooks writing removed in trail-solo-grafo change. Kept as stub for retract compatibility. */
+function upsertGlobalHooks(_id: string, _path: string, _helpers: string): GlobalWrite {
+  return { id: _id, path: _path, action: 'unchanged' };
 }
 
 /**
- * Install the user-level copy: the shim, the hook entries that call it, and the
- * user-scope MCP registration.
+ * Install the user-level copy: only the user-scope MCP registration.
+ * Hook shim and settings removed in trail-solo-grafo change.
  *
- * The shim is written to `home` and the hook commands name it by absolute path, for
- * the reason the repo form can't be reused: `${CLAUDE_PROJECT_DIR}/.claude/helpers/`
- * resolves inside whatever project is open, and the whole point is to work in one
- * that has no such file. The shim itself is the same one every host gets, and finds
- * the installed package the same way (see claude/shim-template.ts).
- *
- * Best-effort by contract, like every other writer here: a failure is reported as an
- * action, never raised, so a bad `~/.claude.json` can't fail a `graft init`.
+ * Best-effort by contract: a failure is reported as an action, never raised.
  */
 export function installClaudeGlobal(home: string, brand: Brand = 'graft'): GlobalWrite[] {
-  const [shim, settings] = claudeGlobalTargets(home, brand);
   const mcp = { id: 'claude-global-mcp', path: join(home, '.claude.json') };
   const out: GlobalWrite[] = [];
 
-  try {
-    out.push(writeOwned(shim.id, shim.path, hooksShim(), 0o755));
-  } catch {
-    out.push({ id: shim.id, path: shim.path, action: 'skipped-unparseable' });
-  }
-
-  // Only wire the hooks once the shim they call is actually on disk — a hook
-  // entry pointing at a missing file is an error in every session, which is a
-  // worse failure than not installing.
-  if (out[0].action !== 'skipped-unparseable') {
-    try {
-      // Posix form in the command string: `join` gives backslashes on Windows and
-      // the template appends `/graft-hooks.cjs`, so the raw path produces a mixed
-      // `C:\Users\…\helpers/graft-hooks.cjs`. Node accepts forward slashes on
-      // Windows, so one separator throughout is both correct and readable.
-      out.push(upsertGlobalHooks(settings.id, settings.path, toPosixPath(globalHelpersDir(home))));
-    } catch {
-      out.push({ id: settings.id, path: settings.path, action: 'skipped-unparseable' });
-    }
-  }
-
-  // trail: no server, and the `trail` one an older trail registered here goes.
-  // graft's keeps serving every repo still wired as graft; a trail repo turns
-  // it off for its own folder (see disableGraftServerIn).
+  // trail: drop the user server (we don't register trail globally via MCP).
   if (brand === 'trail') {
-    // The workspace server `init --connect` adds stays: it serves no repo tools.
     out.push(dropUserServer(mcp.id, mcp.path, 'trail', isBrainsServer));
     return out;
   }
