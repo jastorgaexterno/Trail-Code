@@ -21,12 +21,23 @@ closest nodes by cosine similarity.
 - **Best on prose.** The model is trained on natural language: it is strong on `.md`
   (specs, docs) and weak on TypeScript/C# symbols — use `trail_find_code` for those.
 
-### Worktrees are first-class
+### Worktrees: the semantic index travels too
 
-A linked worktree has no cache (it is git-ignored). The first query seeds it from the
-main checkout — graph, `ask` index and vector index — and patches the difference
-between the two branches, so the answer is about that worktree's code. Nothing to run
-first, and the main checkout never has to sit on a particular branch.
+Seeding a fresh worktree from the main checkout on the first query is **upstream's**
+work (PR #704, already in the v0.28.0 base): graph, `ask` index and sidecars, then the
+difference between the two branches treated as ordinary drift. Nothing to run first,
+and the main checkout never has to sit on a particular branch.
+
+What this fork adds is what that seed could not know about:
+
+- `embeddings.db` joins the seedable allowlist (`src/graph/seed.ts`), so
+  `trail_search_semantic` answers from a fresh worktree instead of failing with
+  `Embeddings DB not found`.
+- A linked worktree is skipped by workspace child discovery (`src/graph/scopes.ts`),
+  so `trail status` and federated search count each repo once while worktrees are
+  alive, and repos one level deeper (`cliente/app`) are found too.
+- The refresh that patches the seeded copy is bounded (50 files inline, then a
+  background rebuild) and never loads the ONNX model in the answering process.
 
 ### The map refreshes itself, with a bound
 
@@ -64,7 +75,7 @@ windows, and path handling that survives drive letters and CRLF checkouts.
 | Package name | `@trailhq/trail-code` | `trail-code-detacoop` |
 | Semantic search | — | `trail_search_semantic` (ONNX, local) |
 | `trail grep` | O(files × nodes) | O(nodes) |
-| Worktree seeding | `trail build` first | seeded + patched on first query |
+| Worktree seeding | seeded + patched on the first query (upstream #704) | same, plus `embeddings.db` in the seed and worktrees excluded from workspace children |
 | Freshness | manual `trail build` | automatic, bounded (50 files inline, then background) |
 | Extra deps | — | `@huggingface/transformers`, `better-sqlite3`, `sqlite-vec` |
 | Git writes | hooks, branches, pushes | none: trail only reads git |
