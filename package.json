@@ -1,7 +1,7 @@
 {
-  "name": "trail-code-detacoop",
+  "name": "trail-code",
   "version": "0.28.0-semantic.3",
-  "description": "Build a repo's context graph as a folder of linked markdown files: a local, regenerable cache that every query keeps in sync with your code. (fork DETACOOP con semántico, --include-md, knowledge repos)",
+  "description": "Build a repo's context graph as a folder of linked markdown files: a local, regenerable cache that every query keeps in sync with your code. (fork of @trailhq/trail-code: semantic search, --include-md, knowledge repos)",
   "keywords": [
     "ai",
     "agents",
@@ -14,11 +14,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/trailhq/Trail-Code.git"
+    "url": "git+https://github.com/jastorgalj/Trail-Code.git"
   },
-  "homepage": "https://github.com/trailhq/Trail-Code#readme",
+  "homepage": "https://github.com/jastorgalj/Trail-Code#readme",
   "bugs": {
-    "url": "https://github.com/trailhq/Trail-Code/issues"
+    "url": "https://github.com/jastorgalj/Trail-Code/issues"
   },
   "publishConfig": {
     "access": "public"

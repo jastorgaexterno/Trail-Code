@@ -1,7 +1,7 @@
 # Trail-Code fork
 
 A fork of [trailhq/Trail-Code](https://github.com/trailhq/Trail-Code) (base v0.28.0),
-published as `trail-code-detacoop`. Upstream builds the code map; this fork keeps that
+published as `trail-code`. Upstream builds the code map; this fork keeps that
 and drops everything around it that wrote to git on its own.
 
 ## What the fork adds
@@ -84,7 +84,7 @@ windows, and path handling that survives drive letters and CRLF checkouts.
 
 | | Upstream | This fork |
 |---|---|---|
-| Package name | `@trailhq/trail-code` | `trail-code-detacoop` |
+| Package name | `@trailhq/trail-code` | `trail-code` |
 | Semantic search | — | `trail_search_semantic` (ONNX, local) |
 | `trail grep` | O(files × nodes) | O(nodes) |
 | `trail viz` | one repo; only port/export/title/tabs | workspace federation + `--repos`/`--skip`, tests hidden by default |
@@ -109,39 +109,24 @@ hooks, no hosted service. Both amputations are deliberate:
 ## Install
 
 ```bash
-# from npm
-npm install -g trail-code-detacoop --ignore-scripts
-
-# from source
-git clone https://github.com/jastorgaexterno/Trail-Code
-cd Trail-Code
-npm install --ignore-scripts
-npm run build                  # required: --ignore-scripts skips the prepare hook
-npm install -g . --ignore-scripts
+npm install -g trail-code && trail init
 ```
 
-If upstream was installed first, uninstall it to avoid two `trail` binaries:
+The [README](README.md) has the full quick start: the Node version, the CUDA 13 note for the
+`onnxruntime` postinstall, and what `init` writes. [CONTRIBUTING.md](CONTRIBUTING.md) has the
+clone, build and test loop, and the publishing steps.
+
+If upstream was installed first, uninstall it so two `trail` binaries don't compete for `PATH`:
 
 ```bash
 npm uninstall -g @trailhq/trail-code
 ```
 
-Then, in a repo:
-
-```bash
-trail init                     # AGENTS.md section, .trail/, agent skills
-trail build                    # graph + semantic index (first run downloads the model)
-```
-
 ## Publishing
 
-```bash
-npm publish --access public --tag latest
-```
-
-`--tag latest` is mandatory for a prerelease version (`0.28.0-semantic.x`). Never
-publish without building first: `--ignore-scripts` skips `prepare`, so a stale `dist/`
-would ship.
+Manual, from a shell with the npm login — never from CI. The exact steps, the `--tag latest`
+requirement on the `0.28.0-semantic.x` prerelease line and the post-publish checks are in
+[CONTRIBUTING.md](CONTRIBUTING.md#versioning-and-publishing).
 
 ## Upstream
 

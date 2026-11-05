@@ -74,7 +74,8 @@ test('runInit appends the allowlist to a pre-existing permissions block, preserv
 test('postinstall prints the nudge in a fresh dir', () => {
   const d = fresh();
   const out = runPostinstall({ INIT_CWD: d, CI: '' });
-  assert.match(out, /npx graft init/);
+  assert.match(out, /Trail installed/);
+  assert.match(out, /trail init/);
 });
 
 test('postinstall is silent under CI', () => {

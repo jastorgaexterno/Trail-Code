@@ -330,7 +330,7 @@ async function callSingleTool(
         const { spawn: _spawn } = await import('node:child_process');
         const { graftCliPath } = await import('../claude/paths.js');
         const cliPath = graftCliPath();
-        if (!cliPath) return { text: 'trail CLI not found — is @detacoop/trail-code installed?', isError: true };
+        if (!cliPath) return { text: 'trail CLI not found — is trail-code installed?', isError: true };
         const extraArgs: string[] = [];
         if (args.include_md === true) extraArgs.push('--include-md');
         if (args.semantic === false) extraArgs.push('--no-semantic');

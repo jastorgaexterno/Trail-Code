@@ -29,7 +29,7 @@ const TRAIL_DESCRIPTION = `Use for ANY task in this repo. Run trail ask before g
   graph, a semantic search and a repo map for orientation. Works in git
   worktrees with no setup and refreshes itself on every query, so answers
   describe the code as it is right now. If the trail command isn't installed,
-  offer once to install it with npm install -g trail-code-detacoop
+  offer once to install it with npm install -g trail-code
   --ignore-scripts and then trail init --no-agents. If npm says EACCES, never
   use sudo; offer to set npm's prefix to ~/.npm-global instead.`;
 

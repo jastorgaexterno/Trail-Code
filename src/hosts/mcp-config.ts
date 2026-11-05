@@ -51,7 +51,7 @@ const NPX_LAUNCH = { command: 'npx', args: ['-y', '@nanonets/graft', 'mcp'] };
 const BIN_LAUNCH = { command: 'graft', args: ['mcp'] };
 // The same server under trail's name, for a repo that uses trail: its tools are
 // `trail_*` (and it still answers `graft_*`).
-const TRAIL_NPX_LAUNCH = { command: 'npx', args: ['-y', '@trailhq/trail-code', 'mcp'] };
+const TRAIL_NPX_LAUNCH = { command: 'npx', args: ['-y', 'trail-code', 'mcp'] };
 const TRAIL_BIN_LAUNCH = { command: 'trail', args: ['mcp'] };
 
 function graftOnPath(): boolean {
@@ -188,7 +188,7 @@ function jsonTarget(
  * 'global': registering there affects every project on the machine.
  *
  * `name` is the repo's name for the tool: under trail the server is `trail`,
- * launched as `trail mcp` (or `npx -y @trailhq/trail-code mcp`). The files
+ * launched as `trail mcp` (or `npx -y trail-code mcp`). The files
  * are the same either way.
  */
 export function mcpTargets(
