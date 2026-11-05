@@ -5,6 +5,11 @@ Soporte de primera clase para git worktrees: el índice de cada path consultado 
 working tree de ese path, se siembra desde el checkout principal y se refresca solo, sin
 `trail build` manual y sin exigir que el checkout principal permanezca en una rama concreta.
 
+Origen: el seed desde el checkout principal y el lock de concurrencia son de upstream (PR
+#704, ya presentes en la base v0.28.0). El delta de este fork es que `embeddings.db` viaja
+en el seed, que un worktree enlazado no cuenta como child del workspace, y que el refresco
+inline está acotado y no carga el modelo ONNX.
+
 ## Requirements
 
 ### Requirement: Seed del índice al consultar desde un worktree
