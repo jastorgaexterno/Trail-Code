@@ -1,7 +1,7 @@
 schema: spec-driven
 
 context: |
-  Este es el fork @detacoop/trail-code de @trailhq/trail-code (MIT).
+  Este es el fork trail-code de @trailhq/trail-code (MIT).
   Lenguaje: TypeScript/Node.js, target Node >=22.3 o >=20.16.
   Plataforma primaria: Windows 11 (DETACOOP corre en Windows).
   Todos los artifacts se escriben en español.

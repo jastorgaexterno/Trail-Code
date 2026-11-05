@@ -7,14 +7,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
-// The same code ships as @trailhq/trail-code (the `trail` command) and as
-// @nanonets/graft (`graft`, its old name). The install event and the nudge say
-// which one this is.
+// The same code ships as `trail-code` (the `trail` command, this fork) as
+// `@trailhq/trail-code` (the same command, upstream) and as @nanonets/graft
+// (`graft`, its old name). The install event and the nudge say which one this is.
 let pkgName = '@nanonets/graft';
 try {
   pkgName = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name ?? pkgName;
 } catch { /* the graft defaults */ }
-const isTrail = pkgName === '@trailhq/trail-code';
+const isTrail = pkgName === 'trail-code' || pkgName === '@trailhq/trail-code';
 if (isTrail) process.env.TRAIL_INVOKED_AS = 'trail';
 
 /**

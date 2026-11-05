@@ -27,7 +27,7 @@ export const BRAND_ENV = "TRAIL_INVOKED_AS";
 
 /** The npm package each name is published as. Same code, two names. */
 export const PACKAGE_FOR: Record<Brand, string> = {
-  trail: "@trailhq/trail-code",
+  trail: "trail-code",
   graft: "@nanonets/graft",
 };
 
@@ -42,7 +42,7 @@ export function setBrand(b: Brand, env: NodeJS.ProcessEnv = process.env): void {
 /**
  * `init --pair CODE` is Trail's setup prompt: only Trail's page hands out a pair
  * code, so the person asked for Trail, whatever name ran it. An agent whose
- * install of @trailhq/trail-code failed swaps in the `graft` already on the
+ * install of `trail-code` failed swaps in the `graft` already on the
  * machine, and an old shim loads dist/cli.js with no name; under graft either
  * would skip the look-back and `.trail/` while the page waits for them.
  */
