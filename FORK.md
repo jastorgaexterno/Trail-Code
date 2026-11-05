@@ -54,6 +54,18 @@ every node per file. Nodes are now pre-indexed by path in a `WeakMap`: O(nodes) 
 O(1) per lookup. 43s → 1.6s on a 3,700-file repo. PR
 [#713](https://github.com/trailhq/Trail-Code/pull/713) is open upstream.
 
+### `trail viz` over a workspace, without the test noise
+
+Upstream's `viz` serves one repo and offers only `--port`, `--no-open`, `--export`,
+`--title` and `--tabs`. This fork adds what a multi-repo checkout needs:
+
+- **Workspace federation** — one page with every child repo's code nodes, and
+  `--repos a b` / `--skip a b` to pick which (space or comma separated).
+- **Tests hidden by default** — `--include-tests` brings them back. Only the view
+  filters: the index keeps every node, so `trail ask` and `trail grep` see the same
+  graph they always did.
+- Viewer branding says `trail`, not `graft`.
+
 ### Windows
 
 `--ignore-scripts` installs (WASM grammars where a native binding would need a C++
@@ -75,15 +87,24 @@ windows, and path handling that survives drive letters and CRLF checkouts.
 | Package name | `@trailhq/trail-code` | `trail-code-detacoop` |
 | Semantic search | — | `trail_search_semantic` (ONNX, local) |
 | `trail grep` | O(files × nodes) | O(nodes) |
+| `trail viz` | one repo; only port/export/title/tabs | workspace federation + `--repos`/`--skip`, tests hidden by default |
+| Notes / learnings | `trail note`, learnings look-back | removed: unvalidated free text; OpenSpec is the durable-context path |
 | Worktree seeding | seeded + patched on the first query (upstream #704) | same, plus `embeddings.db` in the seed and worktrees excluded from workspace children |
 | Freshness | manual `trail build` | automatic, bounded (50 files inline, then background) |
 | Extra deps | — | `@huggingface/transformers`, `better-sqlite3`, `sqlite-vec` |
 | Git writes | hooks, branches, pushes | none: trail only reads git |
 
 The fork is a code map and nothing else: no session memory, no shared team repo, no
-hooks, no hosted service. That is deliberate — automatic git writes collided with the
-team's branch protection and MR-only policy, and were the source of most of the
-maintenance.
+hooks, no hosted service. Both amputations are deliberate:
+
+- **Notes and learnings are gone** (`src/notes/`, `src/learn/`, `src/check/`,
+  `src/cloud/`). They wrote free-form text that nothing validated, so the store drifted
+  into confident claims the code did not back. The validated path for durable context
+  here is OpenSpec: `openspec/specs/` and `openspec/changes/` are indexed as markdown
+  nodes, so `trail ask` still finds them — but a human reviewed them first.
+- **Automatic git writes are gone** — hooks, branches and pushes collided with the
+  team's branch protection and MR-only policy, and were the source of most of the
+  maintenance.
 
 ## Install
 
