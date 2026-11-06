@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.29.0
+
+First release published as **`trail-code`** (the package used to be
+`trail-code-detacoop`). Install it with `npm install -g trail-code`.
+
+### Changed
+
+- **`trail init` installs the Hermes skill from the `hermes` host.** It used to
+  be written as a side effect of Claude's wiring, so `--agents hermes` produced
+  `AGENTS.md` with no skill, and `--agents claude` also dropped one into
+  `~/.hermes/skills/trail/`. Each host now writes only its own skill, under
+  `--no-global` it writes nothing outside the repo, and the directory is created
+  when missing instead of requiring `~/.hermes/skills` to exist already.
+- **`--agents`, `--list-agents` and `--help` name only what `init` wires**
+  (`claude` and `hermes`); an unsupported id fails with `unknown agent id`. The
+  multi-host registry those flags used to advertise stays in place — `trail init
+  --all`, `upkeep` and `retract` still rely on it to clean wiring left by
+  earlier versions.
+- **`trail init --dry-run` lists only what `init` writes.** It used to promise
+  `.claude/settings.json`, `.trail/hook.cjs`, `.trail/statusline.cjs` and a
+  helpers file this fork no longer writes.
+- **`retract`, `uninstall` and `upkeep` cover the Hermes skill**, and the
+  messages they print use the running brand instead of the literal `graft`.
+
+### Removed
+
+- **Learnings, notes, `trail check`, the hook, the statusline and the cloud
+  sync.** Durable context lives in `openspec/` (`specs/` and `changes/`), which
+  the code map indexes as markdown, and a change is only trusted once
+  `openspec validate` passes.
+
+### Added
+
+- **`trail viz` over a whole workspace**: federated multi-repo view with
+  `--repos`/`--skip` and `--include-tests`.
+- **`CONTRIBUTING.md`**, with build, test and release steps; the README now
+  points there for cloning and running from source.
+
 ## 0.28.0
 
 ### Added
