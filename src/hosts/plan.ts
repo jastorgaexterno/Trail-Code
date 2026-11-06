@@ -13,7 +13,7 @@ import { statSync } from 'node:fs';
 import { HOSTS, detectHosts, hostRelPath, hostWiringName, type DetectProbe, type HostTarget } from './registry.js';
 import { mcpTargets } from './mcp-config.js';
 import { antigravitySkillTargets } from './antigravity.js';
-import { claudeTargets } from '../claude/init.js';
+import { claudeTargets, hermesSkillPath } from '../claude/init.js';
 import { brand, type Brand } from '../brand.js';
 import { claudeGlobalTargets } from './claude-global.js';
 
@@ -73,8 +73,19 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[] } =
   const plans: HostPlan[] = [
     // Repo writes plus the user-level copy under `~/.claude` — the picker and
     // `--dry-run` render 'global' writes in their own section, so a user sees
-    // what lands outside the repo before agreeing to it.
-    { id: 'claude', name: 'Claude Code', detected: true, writes: [...claudeTargets(repo, brand()), ...claudeGlobalTargets(home, brand())] },
+    // what lands outside the repo before agreeing to it. Under trail the
+    // Claude layer writes only the repo's `.trail/` ignore entry and the skill
+    // (claudeTargetsFor), and the one user-level file it still touches is the
+    // user-scope MCP registration in `~/.claude.json`.
+    {
+      id: 'claude',
+      name: 'Claude Code',
+      detected: true,
+      writes: [
+        ...claudeTargets(repo, brand(), home),
+        ...claudeGlobalTargets(home, name).filter((w) => name !== 'trail' || w.id === 'claude-global-mcp'),
+      ],
+    },
     ...HOSTS.map((host) => ({
       id: host.id,
       name: host.name,
@@ -83,6 +94,11 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[] } =
         instructionTarget(repo, host, name),
         ...mcpTargets(repo, [host.id], { home, name }),
         ...(host.id === 'antigravity' ? antigravitySkillTargets(home, name) : []),
+        // Hermes reads its skills from its own profile directory, so selecting
+        // the host writes the skill outside the repo (hosts/init.ts).
+        ...(host.id === 'hermes'
+          ? [{ hostId: host.id, id: 'hermes-skill', path: hermesSkillPath(home), scope: 'global' as const, kind: 'skill' as const, what: 'hermes skill' }]
+          : []),
       ],
     })),
   ];

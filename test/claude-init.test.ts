@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { buildGraphIfMissing, runInit } from '../src/claude/init.js';
+import { buildGraphIfMissing, claudeTargets, runInit } from '../src/claude/init.js';
 import { formatInitEpilogue } from '../src/cli-epilogue.js';
 import { readStamp } from '../src/upkeep.js';
 
@@ -28,6 +28,35 @@ test('runInit overwrites a stale skill file', () => {
   writeFileSync(skillPath, 'stale junk');
   runInit(d, { build: false, home: fresh() });
   assert.match(readFileSync(skillPath, 'utf8'), /name: graft/);
+});
+
+// --- what the Claude layer does NOT write ---------------------------------
+
+test('runInit under trail leaves the Hermes skill to the hermes host', () => {
+  const d = fresh();
+  const home = fresh();
+  // A machine with Hermes installed, wired here by `--agents claude` only.
+  mkdirSync(join(home, '.hermes', 'skills'), { recursive: true });
+  runInit(d, { build: false, home, brand: 'trail' });
+  assert.ok(existsSync(join(home, '.claude', 'skills', 'trail', 'SKILL.md')), 'the Claude skill is written');
+  assert.ok(!existsSync(join(home, '.hermes', 'skills', 'trail', 'SKILL.md')), 'and the Hermes one is not');
+});
+
+test('claudeTargets under trail announces only what runTrailInit writes', () => {
+  const d = fresh(); const home = fresh();
+  const paths = claudeTargets(d, 'trail', home).map((w) => w.path);
+  assert.deepEqual(paths.sort(), [join(d, '.trail', '.gitignore'), join(home, '.claude', 'skills', 'trail', 'SKILL.md')].sort());
+  // The four files trail-solo-grafo stopped writing must not show up in a plan.
+  for (const ghost of [
+    join(d, '.claude', 'settings.json'),
+    join(d, '.trail', 'hook.cjs'),
+    join(d, '.claude', 'settings.local.json'),
+    join(d, '.trail', 'statusline.cjs'),
+  ]) {
+    assert.ok(!paths.includes(ghost), `${ghost} is not written, so it is not planned`);
+  }
+  // graft's own layout is unchanged: it is what older repos still have.
+  assert.equal(claudeTargets(d, 'graft', home).length, 5);
 });
 
 test('runInit preserves foreign settings and warns on foreign statusLine', () => {

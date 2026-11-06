@@ -59,7 +59,7 @@ test("both skills tell the agent how worktrees and the drift refresh behave", ()
   for (const [label, src] of [
     ["claude trail", skillTemplate("trail")],
     ["claude graft", skillTemplate("graft")],
-    ["hermes trail", hermesSkillTemplate("trail")],
+    ["hermes trail", hermesSkillTemplate()],
   ] as const) {
     assert.match(src, /worktree/i, `${label}: worktrees are explained`);
     assert.match(src, /50\b/, `${label}: the inline bound is stated`);
@@ -68,7 +68,7 @@ test("both skills tell the agent how worktrees and the drift refresh behave", ()
 });
 
 test("the hermes skill has the frontmatter Hermes needs", () => {
-  const src = hermesSkillTemplate("trail");
+  const src = hermesSkillTemplate();
   assert.ok(src.startsWith("---\n"));
   for (const key of ["name: trail", "description:", "category: devops", "triggers:"]) {
     assert.ok(src.includes(key), key);

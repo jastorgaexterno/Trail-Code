@@ -91,11 +91,17 @@ test("auto --dry-run prints the plan, without other agents' laptop files, and wr
   const r = init(repo, home, ["--agents", "auto", "--dry-run"]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stderr, /would write in this repo:/);
+  // Only the two agents trail still wires: the shared instruction file for
+  // Hermes, and Claude Code's repo marker.
+  assert.ok(r.stderr.includes("AGENTS.md"), r.stderr);
+  assert.ok(r.stderr.includes(join(".trail", ".gitignore")), r.stderr);
+  // Cursor is installed here, but it is not an id init accepts, so it is neither
+  // planned nor named.
   assert.ok(!r.stderr.includes(".windsurf"), "Windsurf isn't here: no repo file for it in the plan");
-  assert.ok(r.stderr.includes(join(".cursor", "rules", "trail.mdc")), r.stderr);
+  assert.ok(!r.stderr.includes(join(".cursor", "rules", "trail.mdc")), r.stderr);
+  assert.doesNotMatch(r.stderr, /Cursor/);
   assert.ok(!r.stderr.includes(join(".claude", "skills", "trail")), "Claude Code isn't here: no ~/.claude skill in the plan");
   assert.doesNotMatch(r.stderr, /affects ALL repos/);
-  assert.match(r.stderr, /Cursor/);
   assert.deepEqual(readdirSync(repo), [".git"]);
 });
 

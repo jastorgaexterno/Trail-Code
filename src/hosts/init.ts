@@ -12,6 +12,8 @@ import type { Brand } from '../brand.js';
 import { registerMcpConfigs, type McpWrite } from './mcp-config.js';
 import type { ConfigWrite } from './config-write.js';
 import { installAntigravitySkill } from './antigravity.js';
+import { hermesSkillPath } from '../claude/init.js';
+import { hermesSkillTemplate } from '../claude/hermes-skill-template.js';
 
 export interface HostsInitResult {
   written: { id: string; path: string; action: string }[];
@@ -94,6 +96,18 @@ export function runHostsInit(
   const skipped = HOSTS.filter((h) => !selected.includes(h)).map((h) => h.id);
   // Whether `id` may write outside the repo on this run.
   const outside = (id: string) => opts.global !== false && (opts.laptop === undefined || opts.laptop.includes(id));
+  // The Hermes skill. Hermes loads skills from its own profile directory, not
+  // from the repo, so selecting the host is what installs it there — no
+  // "is Hermes installed?" gate: `writeOwned` creates the directory (mkdir -p)
+  // and a clean HOME has no `~/.hermes/skills` yet. `--no-global` suppresses it
+  // like every other out-of-repo write.
+  if (outside('hermes') && selected.some((h) => h.id === 'hermes')) {
+    const skillPath = hermesSkillPath(home);
+    const action = writeOwned(skillPath, hermesSkillTemplate());
+    // graft's copy of the skill goes, so Hermes never loads two for one tool.
+    if (name === 'trail') removeGraftCopy(hermesSkillPath(home, 'graft'));
+    written.push({ id: 'hermes', path: skillPath, action });
+  }
   const mcp =
     opts.mcp === false
       ? []

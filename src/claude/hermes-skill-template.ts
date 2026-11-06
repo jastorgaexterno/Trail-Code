@@ -11,10 +11,14 @@
  * here may name a command or tool the binary does not expose — an agent that
  * reads a skill telling it to run a removed command fails with total confidence.
  */
-import { inBrand, type Brand } from "../brand.js";
-
-export function hermesSkillTemplate(brand: Brand = "graft"): string {
-  return inBrand(`---
+/**
+ * The Hermes skill body. One text, no brand parameter: every command it names is
+ * already spelled the way the `trail` binary spells it (the template has no
+ * `graft` to rewrite), so a brand argument would only be a parameter nothing
+ * reads.
+ */
+export function hermesSkillTemplate(): string {
+  return `---
 name: trail
 description: >
   Use for ANY task in a trail-indexed repo. Runs trail ask before exploring and
@@ -150,5 +154,5 @@ mcp_servers:
 
 Si \`trail\` no está instalado: \`npm install -g trail-code --ignore-scripts\`
 y después \`trail init\` en el repo.
-`, brand);
+`;
 }

@@ -5,7 +5,6 @@ import { execFileSync } from 'node:child_process';
 import { disableGraftServerIn, installClaudeGlobal, type GlobalWrite } from '../hosts/claude-global.js';
 import { mergeGraftSettings, mergeTrailShared, mergeTrailLocal } from './settings-merge.js';
 import { skillTemplate } from './skill-template.js';
-import { hermesSkillTemplate } from './hermes-skill-template.js';
 import { mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
 import { readJsonObject } from '../hosts/config-write.js';
 import { hasGraftIndex } from '../graph/root.js';
@@ -22,24 +21,19 @@ export function trailSkillPath(home: string = homedir()): string {
 }
 
 /**
- * Where trail's Hermes skill goes: the user's Hermes profile skills directory.
- * On Windows: %LOCALAPPDATA%/hermes/skills/trail/SKILL.md
- * On Linux/macOS: ~/.hermes/skills/trail/SKILL.md
+ * Where the Hermes skill goes: Hermes' own profile skills directory.
+ * On Windows: %LOCALAPPDATA%/hermes/skills/<name>/SKILL.md
+ * On Linux/macOS: ~/.hermes/skills/<name>/SKILL.md
+ *
+ * `name` is the skill's own folder: `trail` now, `graft` for the copy an older
+ * graft left behind (`retract` removes both). Writing it is the `hermes` host's
+ * job (hosts/init.ts), not Claude Code's.
  */
-export function hermesSkillPath(home: string = homedir()): string {
-  if (process.platform === 'win32') {
-    const local = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local');
-    return join(local, 'hermes', 'skills', 'trail', 'SKILL.md');
-  }
-  return join(home, '.hermes', 'skills', 'trail', 'SKILL.md');
-}
-
-/** Whether the Hermes skills directory exists on this machine. */
-export function hermesInstalled(home: string = homedir()): boolean {
-  const dir = process.platform === 'win32'
+export function hermesSkillPath(home: string = homedir(), name: Brand = 'trail'): string {
+  const base = process.platform === 'win32'
     ? join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'hermes', 'skills')
     : join(home, '.hermes', 'skills');
-  return existsSync(dir);
+  return join(base, name, 'SKILL.md');
 }
 
 /** Write `entry` into `.trail/.gitignore` to keep the cache out of git. */
@@ -71,17 +65,16 @@ export function wiringName(dir: string, initBrand?: Brand): Brand {
 
 /**
  * `claudeTargets` under one name.
- * trail-solo-grafo: hook.cjs and settings.json writing removed; kept for retract/plan compatibility.
+ * trail-solo-grafo: hook.cjs, settings.json and the statusline shims are not
+ * written any more, so the plan says only what `runTrailInit` really touches:
+ * the repo's `.trail/` ignore entry and the skill under `~/.claude`.
  */
 export function claudeTargetsFor(dir: string, name: Brand, home: string = homedir()): PlannedWrite[] {
   if (name !== 'trail') return legacyClaudeTargets(dir, name);
   const t = (path: string, what: string): PlannedWrite => ({ hostId: 'claude', id: 'claude', path, scope: 'repo', kind: 'claude', what });
   return [
-    t(join(dir, '.claude', 'settings.json'), 'trail SessionStart hook, shared'),
-    t(join(dir, TRAIL_HOOK), 'hooks shim, shared'),
-    t(join(dir, '.claude', 'settings.local.json'), 'trail statusline + allowlist, yours'),
-    t(join(dir, TRAIL_STATUSLINE), 'statusline shim, git-ignored'),
-    { hostId: 'claude', id: 'claude', path: trailSkillPath(home), scope: 'global', kind: 'claude', what: 'trail skill' },
+    t(join(dir, '.trail', '.gitignore'), `${name} cache ignore entry`),
+    { hostId: 'claude', id: 'claude', path: trailSkillPath(home), scope: 'global', kind: 'claude', what: `${name} skill` },
   ];
 }
 
@@ -194,13 +187,10 @@ function runTrailInit(
     mkdirSync(dirname(skill), { recursive: true });
     writeFileSync(skill, skillTemplate('trail'));
     skillPath = skill;
-
-    // Write the Hermes skill when Hermes is installed on this machine.
-    if (hermesInstalled(home)) {
-      const hPath = hermesSkillPath(home);
-      mkdirSync(dirname(hPath), { recursive: true });
-      writeFileSync(hPath, hermesSkillTemplate('trail'));
-    }
+    // The Hermes skill is NOT written here: it belongs to the `hermes` host
+    // (hosts/init.ts), so `--agents hermes` installs it and `--agents claude`
+    // does not. Writing it from the Claude path is what made the two
+    // selections lie about what they install.
   }
 
   // Clean up any old hook/shim/skill files a previous init may have written.

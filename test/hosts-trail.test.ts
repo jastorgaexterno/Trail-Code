@@ -60,7 +60,7 @@ test('trail spelling: renamed commands, the name in prose, the code map folder m
   assert.equal(trailSpelling('run `graft check` in CI'), 'run `trail build --check` in CI');
   assert.equal(trailSpelling('`graft stats --json`'), '`trail status --json`');
   assert.equal(trailSpelling('`graft checkout x` and `graft ask "q"`'), '`trail checkout x` and `trail ask "q"`');
-  assert.equal(trailSpelling('## Graft — see graft/INDEX.md, graft-hooks.cjs, graft_find_code'), '## Trail — see .trail/cache/INDEX.md, graft-hooks.cjs, graft_find_code');
+  assert.equal(trailSpelling('## Graft — see graft/INDEX.md, graft-hooks.cjs, graft_find_code'), '## Trail — see .trail/cache/INDEX.md, graft-hooks.cjs, trail_find_code');
   assert.equal(trailSpelling('`graft/` holds it, unlike .claude/skills/graft/ or @nanonets/graft/x'), '`.trail/cache/` holds it, unlike .claude/skills/graft/ or @nanonets/graft/x');
 });
 
@@ -155,19 +155,35 @@ test('wiring a graft repo under trail moves the other agents too', () => {
   );
 });
 
-test('CLI: trail init --dry-run names trail\'s files', () => {
+test('CLI: trail init --dry-run names trail\'s files, and only the two supported agents', () => {
   const repo = tmpRepo('trail-dry');
   const home = tmpRepo('trail-dry-home');
-  const r = spawnSync(process.execPath, ['--import', 'tsx', join('src', 'bin', 'trail.ts'), 'init', repo, '--no-build', '--agents', 'cursor', 'kiro', 'adal', '--dry-run'], {
+  const r = spawnSync(process.execPath, ['--import', 'tsx', join('src', 'bin', 'trail.ts'), 'init', repo, '--no-build', '--agents', 'hermes', '--dry-run'], {
     encoding: 'utf8',
     env: { ...process.env, HOME: home, USERPROFILE: home, DO_NOT_TRACK: '1', TRAIL_INVOKED_AS: undefined, TRAIL_HOME: undefined },
   });
   assert.equal(r.status, 0, r.stderr);
-  for (const rel of [join('.cursor', 'rules', 'trail.mdc'), join('.kiro', 'steering', 'trail.md'), join('.adal', 'skills', 'trail', 'SKILL.md')]) {
-    assert.ok(r.stderr.includes(rel), `${rel} in ${r.stderr}`);
-  }
+  // The Hermes host writes the shared instruction file and its own skill.
+  assert.ok(r.stderr.includes('AGENTS.md'), r.stderr);
+  assert.ok(r.stderr.includes(join('.hermes', 'skills', 'trail', 'SKILL.md')), r.stderr);
+  // Claude Code was not selected, so none of its files are announced.
+  assert.ok(!r.stderr.includes(join('.claude', 'skills')), r.stderr);
   assert.doesNotMatch(r.stderr, /graft\.mdc|steering[\\/]graft\.md|skills[\\/]graft/);
   assert.deepEqual(readdirSync(repo), [], 'a dry run writes nothing');
+});
+
+test('CLI: trail init announces only claude and hermes, and refuses any other id', () => {
+  const repo = tmpRepo('trail-surface');
+  const home = tmpRepo('trail-surface-home');
+  const env = { ...process.env, HOME: home, USERPROFILE: home, DO_NOT_TRACK: '1' };
+  const list = spawnSync(process.execPath, ['--import', 'tsx', join('src', 'bin', 'trail.ts'), 'init', '--list-agents'], { encoding: 'utf8', env });
+  assert.equal(list.status, 0, list.stderr);
+  assert.deepEqual(list.stdout.split('\n').filter(Boolean), ['claude', 'hermes']);
+
+  const cursor = spawnSync(process.execPath, ['--import', 'tsx', join('src', 'bin', 'trail.ts'), 'init', repo, '--no-build', '--agents', 'cursor'], { encoding: 'utf8', env });
+  assert.notEqual(cursor.status, 0, 'an amputated host is not an accepted id');
+  assert.match(cursor.stderr, /unknown agent id\(s\): cursor; valid: claude, hermes/);
+  assert.deepEqual(readdirSync(repo), [], 'nothing is written for a rejected id');
 });
 
 test("trail run through npx isn't installed: npx's own bin folder doesn't count, so agents get the npx launch", () => {

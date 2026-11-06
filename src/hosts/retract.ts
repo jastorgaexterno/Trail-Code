@@ -31,10 +31,10 @@ import { ALL_MARKERS, type Markers } from './sections.js';
 import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { claudeGlobalTargets } from './claude-global.js';
 import { antigravitySkillTargets } from './antigravity.js';
-import { claudeTargetsFor, legacyClaudeTargets, TRAIL_HOOK, TRAIL_STATUSLINE, trailSkillPath } from '../claude/init.js';
+import { claudeTargetsFor, legacyClaudeTargets, TRAIL_HOOK, TRAIL_STATUSLINE, trailSkillPath, hermesSkillPath } from '../claude/init.js';
 import { isGraftAllowEntry, isGraftFooterRegex } from '../claude/settings-merge.js';
 import type { WriteScope } from './plan.js';
-import type { Brand } from '../brand.js';
+import { brand, inBrand, type Brand } from '../brand.js';
 
 /** Both names a file can go by: graft's, and trail's in a repo that uses trail. */
 const NAMES: readonly Brand[] = ['graft', 'trail'];
@@ -394,6 +394,7 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   if (exclude.has('agents')) { /* hookTargets removed in trail-solo-grafo */ }
   if (exclude.has('cursor')) { /* cursorHookTargets removed in trail-solo-grafo */ }
   if (exclude.has('antigravity')) for (const n of NAMES) for (const t of antigravitySkillTargets(home, n)) keptPaths.add(t.path);
+  if (exclude.has('hermes')) for (const n of NAMES) keptPaths.add(hermesSkillPath(home, n));
 
   /** Queue a target unless a kept host owns that path, or it's already queued. */
   const seen = new Set<string>();
@@ -412,7 +413,7 @@ function targets(repo: string, opts: RetractOpts): Target[] {
       add(
         host.kind === 'owned'
           ? { hostId: host.id, path, what: `${n}-owned instruction file`, scope: 'repo', run: (a) => removeFile(path, a) }
-          : { hostId: host.id, path, what: 'fenced graft section', scope: 'repo', run: (a) => stripSection(path, a) },
+          : { hostId: host.id, path, what: inBrand('fenced graft section'), scope: 'repo', run: (a) => stripSection(path, a) },
       );
     }
   }
@@ -477,6 +478,14 @@ function targets(repo: string, opts: RetractOpts): Target[] {
       ] as Target[]) add(t);
     }
     // agents (Codex) hook targets removed in trail-solo-grafo
+    // The Hermes skill, both names: `init --agents hermes` writes trail's under
+    // ~/.hermes/skills/trail/, and an older graft wrote graft's beside it.
+    if (!exclude.has('hermes')) {
+      for (const n of NAMES) {
+        const skill = hermesSkillPath(home, n);
+        add({ hostId: 'hermes', path: skill, what: `${n} skill (Hermes)`, scope: 'global', run: (a) => removeFile(skill, a) });
+      }
+    }
     if (!exclude.has('antigravity')) {
       for (const t of NAMES.flatMap((n) => antigravitySkillTargets(home, n))) {
         add({ hostId: t.hostId, path: t.path, what: t.what, scope: 'global', run: (a) => removeFile(t.path, a) });
@@ -491,11 +500,16 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     const trailCache = join(repo, '.trail', 'cache');
     const gitignore = join(repo, '.gitignore');
     const ignore = join(repo, '.ignore');
+    // The repo-level entries these strip are the code map's folder as *older*
+    // versions spelled it — the literal `graft/`, whichever name runs now. Under
+    // graft the label keeps that spelling; under trail it names the entry instead,
+    // so the command a user typed never reports another product's folder.
+    const mapEntry = brand() === 'graft' ? 'graft/' : 'code map';
     for (const t of [
       { hostId: 'graph', path: cache, what: 'local graph cache', scope: 'repo', run: (a) => removeDir(cache, a) },
       { hostId: 'graph', path: trailCache, what: 'local graph cache', scope: 'repo', run: (a) => removeDir(trailCache, a) },
-      { hostId: 'graph', path: gitignore, what: 'graft/ ignore entry', scope: 'repo', run: (a) => stripIgnoreEntries(gitignore, [/^\/?graft\/?$/], a) },
-      { hostId: 'graph', path: ignore, what: 'graft/ search re-admit entries', scope: 'repo', run: (a) => stripIgnoreEntries(ignore, [/^!?graft\/?$/, /^graft\/\.(cache|graph)\/?$/], a) },
+      { hostId: 'graph', path: gitignore, what: `${mapEntry} ignore entry`, scope: 'repo', run: (a) => stripIgnoreEntries(gitignore, [/^\/?graft\/?$/], a) },
+      { hostId: 'graph', path: ignore, what: `${mapEntry} search re-admit entries`, scope: 'repo', run: (a) => stripIgnoreEntries(ignore, [/^!?graft\/?$/, /^graft\/\.(cache|graph)\/?$/], a) },
     ] as Target[]) add(t);
   }
 

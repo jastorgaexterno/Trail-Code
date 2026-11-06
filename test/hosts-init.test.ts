@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 // form so these expectations are the same on every machine.
 process.env.GRAFT_MCP_NPX = '1';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runHostsInit } from '../src/hosts/init.js';
 import { toPosixPath } from '../src/util/paths.js';
@@ -34,12 +34,61 @@ test('explicit agents list overrides detection and flags unknown ids', () => {
 test('all writes every host and re-run converges (idempotent)', () => {
   const home = fresh(); const repo = fresh();
   const first = runHostsInit(repo, { home, all: true });
-  assert.equal(first.written.length, 10);
+  // Ten registry hosts' instruction files, plus the one skill a host owns
+  // outside the repo (Hermes reads its skills from the profile directory).
+  assert.equal(first.written.length, 11);
+  assert.deepEqual(
+    first.written.filter((w) => w.path.startsWith(home)).map((w) => w.id),
+    ['hermes'],
+    'the Hermes skill is the only write outside the repo',
+  );
   const second = runHostsInit(repo, { home, all: true });
   assert.ok(second.written.every((w) => w.action === 'unchanged'));
   // `agents` and `antigravity` share AGENTS.md, but the fenced section is written once
   const agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
   assert.equal(agents.match(/graft:start/g)!.length, 1);
+});
+
+// --- the Hermes skill belongs to the hermes host -------------------------
+
+test('the hermes host installs its skill in the profile dir, from a clean HOME', () => {
+  const home = fresh(); const repo = fresh();
+  // No ~/.hermes at all: the write is what creates it (mkdir -p).
+  const r = runHostsInit(repo, { home, agents: ['hermes'] });
+  const skill = join(home, '.hermes', 'skills', 'trail', 'SKILL.md');
+  assert.deepEqual(r.written.map((w) => w.path).sort(), [join(repo, 'AGENTS.md'), skill].sort());
+  const text = readFileSync(skill, 'utf8');
+  assert.match(text, /^name: trail$/m);
+  assert.match(text, /^category: devops$/m);
+  assert.match(text, /^triggers:$/m);
+  // Twice is a no-op, byte for byte.
+  assert.equal(runHostsInit(repo, { home, agents: ['hermes'] }).written.at(-1)!.action, 'unchanged');
+});
+
+test('selecting any other host writes no skill at all', () => {
+  const home = fresh(); const repo = fresh();
+  runHostsInit(repo, { home, agents: ['kiro'] });
+  assert.ok(existsSync(join(repo, '.kiro', 'steering', 'graft.md')));
+  assert.ok(!existsSync(join(home, '.hermes')), 'no Hermes selection, no Hermes skill');
+});
+
+test('global: false keeps the hermes skill out of the home dir', () => {
+  const home = fresh(); const repo = fresh();
+  const r = runHostsInit(repo, { home, agents: ['hermes'], global: false });
+  assert.ok(existsSync(join(repo, 'AGENTS.md')), 'the repo file is not a global write');
+  assert.ok(!existsSync(join(home, '.hermes')), '--no-global reaches the skill too');
+  assert.deepEqual(r.written.map((w) => w.path), [join(repo, 'AGENTS.md')]);
+});
+
+test('installing the trail skill removes graft-era skill a Hermes box still has', () => {
+  const home = fresh(); const repo = fresh();
+  const graftSkill = join(home, '.hermes', 'skills', 'graft', 'SKILL.md');
+  mkdirSync(dirname(graftSkill), { recursive: true });
+  writeFileSync(graftSkill, 'old\n');
+  runHostsInit(repo, { home, agents: ['hermes'], brand: 'trail' });
+  assert.ok(existsSync(join(home, '.hermes', 'skills', 'trail', 'SKILL.md')));
+  assert.ok(!existsSync(graftSkill), 'graft\'s copy goes');
+  assert.ok(!existsSync(dirname(graftSkill)), 'and its empty folder with it');
 });
 
 test('preserves user content around the fenced section', () => {
@@ -155,13 +204,17 @@ function cliStderr(repo: string, home: string, extra: string[] = []): string {
   return res.stderr ?? '';
 }
 
-test('CLI: no flags and no TTY writes nothing and names the detected agents', () => {
+test('CLI: no flags and no TTY writes nothing and names only the supported agents', () => {
   const home = fresh(); const repo = fresh();
+  // Cursor is installed here, but init cannot wire it any more: the help line
+  // must not suggest an id the binary rejects.
   mkdirSync(join(home, '.cursor'));
   const out = cliStderr(repo, home);
   assert.match(out, /nothing written/);
-  assert.match(out, /detected: claude, cursor/);
-  assert.match(out, /graft init --agents claude cursor/);
+  assert.match(out, /detected: claude/);
+  assert.doesNotMatch(out, /detected: [^\n]*cursor/);
+  assert.doesNotMatch(out, /--agents claude cursor/);
+  assert.match(out, /init --yes/);
   assert.deepEqual(readdirSync(repo), []);
 });
 
@@ -169,16 +222,17 @@ test('CLI: the graph build is attempted even when claude is not selected', () =>
   const home = fresh(); const repo = fresh();
   mkdirSync(join(home, '.cursor'));
   // Regression: the build used to sit inside `if (wantClaude)`, so picking only
-  // cursor wired .cursor/ and never built the graph its rule file points at.
-  const out = cliStderr(repo, home, ['--agents', 'cursor']);
+  // another agent wired its files and never built the graph they point at.
+  const out = cliStderr(repo, home, ['--agents', 'hermes']);
   assert.match(out, /(built the graph|graph built|skipped graph build|skipped the graph build)/);
 });
 
 test('CLI: --dry-run respects an explicit --agents list', () => {
   const home = fresh(); const repo = fresh();
-  mkdirSync(join(home, '.codex'), { recursive: true });
-  const out = cliStderr(repo, home, ['--agents', 'adal', '--dry-run']);
-  assert.ok(out.includes(join('.adal', 'skills', 'graft', 'SKILL.md')), out);
-  assert.doesNotMatch(out, /AGENTS\.md/);
-  assert.doesNotMatch(out, /affects ALL repos/);
+  const out = cliStderr(repo, home, ['--agents', 'hermes', '--dry-run']);
+  // Hermes' two files, and nothing of Claude Code's (not selected).
+  assert.ok(out.includes('AGENTS.md'), out);
+  assert.ok(out.includes(join('.hermes', 'skills', 'trail', 'SKILL.md')), out);
+  assert.ok(!out.includes(join('.claude', 'skills')), out);
+  assert.match(out, /affects ALL repos/);
 });

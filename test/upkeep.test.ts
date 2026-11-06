@@ -23,6 +23,21 @@ import {
 } from '../src/upkeep.js';
 import { tmpRepo } from './helpers.js';
 
+/** Run `fn` with HOME/USERPROFILE pointed at a scratch home, restored after. */
+function withHome<T>(home: string, fn: () => T): T {
+  const was = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of Object.entries(was)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 test('compareVersions orders releases numerically, not lexically', () => {
   assert.equal(compareVersions('0.9.1', '0.10.0'), -1); // the lexical trap
   assert.equal(compareVersions('0.10.0', '0.9.1'), 1);
@@ -246,4 +261,25 @@ test('formatWiringRefresh discloses machine-wide writes', () => {
   const local = formatWiringRefresh({ from: '0.7.0', to: '0.11.0', hosts: ['agents'], global: false });
   assert.ok(local);
   assert.doesNotMatch(local, /~\/\.codex/);
+});
+
+// --------------------------------------------------------------------------
+// the wiring refresh reaches both skills
+// --------------------------------------------------------------------------
+
+test('a refresh rewrites the Hermes skill, with no Claude Code in the stamp', async () => {
+  const home = tmpRepo('upkeep-hermes-home');
+  const repo = tmpRepo('upkeep-hermes-repo');
+  const skill = join(home, '.hermes', 'skills', 'trail', 'SKILL.md');
+  mkdirSync(join(home, '.hermes', 'skills', 'trail'), { recursive: true });
+  writeFileSync(skill, 'stale from an older version\n');
+  writeStamp(repo, '0.0.1', ['hermes']);
+
+  const { runUpkeep } = await import('../src/upkeep-run.js');
+  const { hermesSkillTemplate } = await import('../src/claude/hermes-skill-template.js');
+  withHome(home, () => runUpkeep(repo, '9.9.9', { background: false, home }));
+
+  assert.equal(readFileSync(skill, 'utf8'), hermesSkillTemplate(), 'the skill is the current version');
+  assert.equal(readStamp(repo)!.version, '9.9.9', 'the refresh ran');
+  assert.ok(!existsSync(join(home, '.claude')), 'claude is not wired here, so nothing of it is written');
 });
