@@ -13,6 +13,7 @@ import { runInit } from '../src/claude/init.js';
 import { runHostsInit } from '../src/hosts/init.js';
 import { registerMcpConfigs } from '../src/hosts/mcp-config.js';
 import { mergeGraftSettings } from '../src/claude/settings-merge.js';
+import { runCli } from './helpers.js';
 
 function fresh(): string {
   return mkdtempSync(join(tmpdir(), 'graft-retract-'));
@@ -316,4 +317,96 @@ test('hosts sharing one path produce a single retraction, not one each', () => {
   const agents = write(d, 'AGENTS.md', `# Notes\n\n${BLOCK}\n`);
   const rs = runRetract(d, { global: false }).filter((r) => r.path === agents);
   assert.equal(rs.length, 1, `AGENTS.md should be queued once, got ${rs.length}`);
+});
+
+// --------------------------------------------------------------------------
+// the agent skills (trail's and the graft-era copies)
+// --------------------------------------------------------------------------
+
+test('a retraction removes the Hermes skill and the folders it leaves empty', () => {
+  const home = fresh(); const repo = fresh();
+  const trailSkill = write(home, join('.hermes', 'skills', 'trail', 'SKILL.md'), 'skill\n');
+  const graftSkill = write(home, join('.hermes', 'skills', 'graft', 'SKILL.md'), 'old\n');
+  const r = byPath(runRetract(repo, { home, apply: true }));
+  assert.equal(r.get(trailSkill), 'deleted');
+  assert.equal(r.get(graftSkill), 'deleted');
+  assert.ok(!existsSync(join(home, '.hermes', 'skills', 'trail')), 'no empty skill folder left');
+  assert.ok(!existsSync(join(home, '.hermes', 'skills', 'graft')), 'no empty graft folder left');
+  assert.deepEqual(changed(runRetract(repo, { home, apply: true })), [], 'a second sweep finds nothing');
+});
+
+test('--no-global leaves the Hermes skill where it is', () => {
+  const home = fresh(); const repo = fresh();
+  const skill = write(home, join('.hermes', 'skills', 'trail', 'SKILL.md'), 'skill\n');
+  runRetract(repo, { home, apply: true, global: false });
+  assert.ok(existsSync(skill), 'out-of-repo writes are only undone with the flag on');
+});
+
+test('a host about to be rewritten keeps its skill', () => {
+  const home = fresh(); const repo = fresh();
+  const skill = write(home, join('.hermes', 'skills', 'trail', 'SKILL.md'), 'skill\n');
+  // `init` retracts every host it is NOT wiring, passing the ones it is as exclude.
+  runRetract(repo, { home, apply: true, exclude: ['claude', 'hermes'] });
+  assert.ok(existsSync(skill), 'the hermes host is selected, so its skill is not churn');
+});
+
+// --------------------------------------------------------------------------
+// the labels a person reads: the running name, never another product's
+// --------------------------------------------------------------------------
+
+/** Run `fn` with the CLI invoked under `b`, restoring whatever was set before. */
+function asBrand<T>(b: 'trail' | 'graft', fn: () => T): T {
+  const prev = process.env.TRAIL_INVOKED_AS;
+  process.env.TRAIL_INVOKED_AS = b;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.TRAIL_INVOKED_AS;
+    else process.env.TRAIL_INVOKED_AS = prev;
+  }
+}
+
+test('under trail, no retraction label a person reads names graft', () => {
+  const d = fresh();
+  const agents = write(d, 'AGENTS.md', `# Notes\n\n${BLOCK}\n`);
+  const gitignore = write(d, '.gitignore', 'node_modules/\ngraft/\n');
+  const ignore = write(d, '.ignore', 'graft/\n!graft/\n');
+  const rs = asBrand('trail', () => runRetract(d, { global: false }));
+
+  const label = (p: string) => rs.find((r) => r.path === p)?.what;
+  assert.equal(label(agents), 'fenced trail section');
+  assert.equal(label(gitignore), 'code map ignore entry');
+  assert.equal(label(ignore), 'code map search re-admit entries');
+  // Labels that name a file by its literal path or key stay as they are:
+  // `.cursor/rules/graft.mdc`, `mcpServers.graft` and the old graft skill really
+  // are graft's. What must not leak is a label for what trail itself wrote.
+  for (const r of rs.filter((r) => /section|ignore entry|re-admit/.test(r.what)))
+    assert.doesNotMatch(r.what, /graft/i, `${r.what} names the old product`);
+});
+
+test('under graft, the same labels keep graft\'s spelling', () => {
+  const d = fresh();
+  const agents = write(d, 'AGENTS.md', `# Notes\n\n${BLOCK}\n`);
+  const gitignore = write(d, '.gitignore', 'node_modules/\ngraft/\n');
+  const rs = asBrand('graft', () => runRetract(d, { global: false }));
+
+  const label = (p: string) => rs.find((r) => r.path === p)?.what;
+  assert.equal(label(agents), 'fenced graft section');
+  assert.equal(label(gitignore), 'graft/ ignore entry');
+});
+
+test('under trail, the empty-uninstall message does not name graft', () => {
+  const repo = fresh();
+  const home = fresh();
+  // The line goes to stderr, like every other `uninstall` report.
+  const out = (r: { stdout: string | null; stderr: string | null }) => `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  const trail = asBrand('trail', () => runCli(['uninstall', repo, '--yes'], { home }));
+  assert.equal(trail.status, 0, trail.describe());
+  assert.match(out(trail), /nothing to remove: no trail wiring found here/);
+  assert.doesNotMatch(out(trail), /graft/i);
+
+  // Under graft the same line keeps graft's spelling, byte for byte.
+  const graft = asBrand('graft', () => runCli(['uninstall', repo, '--yes'], { home }));
+  assert.equal(graft.status, 0, graft.describe());
+  assert.match(out(graft), /nothing to remove: no graft wiring found here/);
 });

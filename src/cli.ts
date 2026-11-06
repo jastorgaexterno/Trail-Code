@@ -23,9 +23,8 @@ import { formatGraphCheckReport } from "./graph/check.js";
 import { buildGraphIfMissing, runInit } from "./claude/init.js";
 import { statuslineWanted } from "./claude/settings-merge.js";
 import { runHostsInit } from "./hosts/init.js";
-import { hostIds } from "./hosts/registry.js";
 import { agentList, autoSelection, autoSummary } from "./hosts/auto.js";
-import { asksForTrail, brand, cmd, graftNotice, PACKAGE_FOR, setBrand, strandedRepoNotice, tag, trailOnPath } from "./brand.js";
+import { asksForTrail, brand, cmd, graftNotice, inBrand, PACKAGE_FOR, setBrand, strandedRepoNotice, tag, trailOnPath } from "./brand.js";
 import { openBrowser } from "./util/browser.js";
 import { contextDirFor } from "./context/node-file.js";
 import { loadGraphCached } from "./graph/load.js";
@@ -1287,26 +1286,35 @@ function shown(repo: string, path: string): string {
   return relative(repo, path).split("\\").join("/");
 }
 
-/** Agents init knows by another id: both read AGENTS.md. */
-const AGENT_ALIASES: Record<string, string> = { codex: "agents", opencode: "agents" };
+/**
+ * The agents `init` supports: Claude Code, and Hermes Agent. Everything else
+ * (cursor, gemini, codex, opencode, antigravity, …) was amputated from the
+ * binary's surface — `--agents cursor` is an unknown id, not a silent no-op. The
+ * registry still describes those hosts by name so `uninstall` keeps knowing the
+ * files they used to write (hosts/retract.ts), but init never wires them.
+ */
+const SUPPORTED_AGENTS = ["claude", "hermes"] as const;
+
+function supported(id: string): boolean {
+  return (SUPPORTED_AGENTS as readonly string[]).includes(id);
+}
 
 /** `graft init`. */
 async function runInitCommand(dir: string, opts: InitOptions, progress?: { mapped?: (m: { nodes: number; edges: number; files: number }) => void }): Promise<{ ids: string[]; laptop: string[] } | null> {
     if (opts.listAgents) {
-      for (const id of [...hostIds(), "claude"]) console.log(id);
+      for (const id of SUPPORTED_AGENTS) console.log(id);
       return null;
     }
     const repo = resolve(dir);
-    // Codex and OpenCode read AGENTS.md: `--agents codex` means that wiring.
-    // The name as given is kept for Trail's onboarding page.
-    const asked = Array.isArray(opts.agents) ? opts.agents : undefined;
     // `--agents auto`: the website's one setup prompt, run by an agent with no one to ask.
+    const asked = Array.isArray(opts.agents) ? opts.agents : undefined;
     const auto = asked?.includes("auto") === true;
     if (auto && asked!.length > 1) {
       console.error("✗ --agents auto picks the agents itself: give it on its own, or name the agents instead");
       process.exit(1);
     }
-    const explicit = asked && !auto ? [...new Set(asked.map((id) => AGENT_ALIASES[id] ?? id))] : undefined;
+    // No aliases any more: the only ids init knows are the supported ones.
+    const explicit = asked && !auto ? [...new Set(asked)] : undefined;
 
     // Checked before anything is written: run from the home folder, init wired
     // it, mapped every code file under it, then said to commit.
@@ -1319,8 +1327,8 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: { mappe
     // Trail's page shares a repo with the team: removed in trail-solo-grafo.
 
     if (explicit) {
-      const validIds = [...hostIds(), "claude"];
-      const unknown = explicit.filter((id) => !validIds.includes(id));
+      const validIds = [...SUPPORTED_AGENTS];
+      const unknown = explicit.filter((id) => !supported(id));
       if (unknown.length) {
         console.error(`✗ unknown agent id(s): ${unknown.join(", ")}; valid: ${validIds.join(", ")}`);
         process.exit(1);
@@ -1333,19 +1341,22 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: { mappe
     // installed — see --yes to get that back).
     const home = homedir();
     const plan = planInit(repo, { home });
-    const detectedIds = plan.filter((p) => p.detected).map((p) => p.id);
+    // Only the supported agents are offered: another agent may be installed on
+    // this machine (the registry still knows it, so `uninstall` can clean it),
+    // but init cannot wire it any more.
+    const detectedIds = plan.filter((p) => p.detected).map((p) => p.id).filter(supported);
     const noAgents = (opts as { agents?: unknown }).agents === false;
 
     // auto: the main agents' repo files plus the laptop's; out-of-repo writes only for `laptop`, the agents installed here and the caller.
     const autoSel = auto ? autoSelection({ home, repo }) : null;
-    const laptop = autoSel?.laptop;
+    const laptop = autoSel?.laptop.filter(supported);
     let ids: string[];
     // The consent answer from the picker. Undefined everywhere else — a scripted
     // or flag-driven init never asked, so it must not silently answer.
     let consent: boolean | undefined;
-    if (autoSel) ids = autoSel.repo;
+    if (autoSel) ids = [...autoSel.repo, ...SUPPORTED_AGENTS];
     else if (explicit) ids = explicit;
-    else if (opts.allAgents) ids = plan.map((p) => p.id);
+    else if (opts.allAgents) ids = [...SUPPORTED_AGENTS];
     else if (noAgents) ids = ["claude"];
     else if (opts.yes || opts.dryRun) ids = detectedIds;
     else if (process.stdin.isTTY && process.stderr.isTTY) {
@@ -1365,6 +1376,10 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: { mappe
       console.error(formatNonInteractiveHelp(detectedIds));
       return null;
     }
+
+    // One gate for every path above (picker included): nothing outside the
+    // supported surface is ever wired or stamped.
+    ids = [...new Set(ids.filter(supported))];
 
     // The picker's answer, recorded before anything is wired: a user who
     // unchecked the row must not have this run's init_completed sent.
@@ -1389,8 +1404,10 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: { mappe
     const targets = [repo, ...children.map((c) => join(repo, c))];
 
     if (opts.dryRun) {
-      if (autoSel)
-        console.error(`· --agents auto: repo files for Claude Code, Cursor, Codex and OpenCode; laptop settings for ${autoSel.agents.length ? agentList(autoSel.agents) : "none (no agent found here)"}\n`);
+      if (autoSel) {
+        const here = autoSel.agents.filter((a) => supported(a));
+        console.error(`· --agents auto: repo files for Claude Code and Hermes; laptop settings for ${here.length ? agentList(here) : "none (no agent found here)"}\n`);
+      }
       console.error(formatPlan(laptopOnly(plan, laptop), ids, repo, home));
       for (const child of children)
         console.error(`\n· ${child}/ (workspace child)\n` + formatPlan(laptopOnly(planInit(join(repo, child), { home }), laptop), ids, join(repo, child), home));
@@ -1525,10 +1542,10 @@ function wireTarget(
       for (const w of res.warnings) say(`⚠ ${w}`);
     }
 
-    // `ids` is already resolved, so hosts init is always driven by an explicit
-    // list — never by its own detection fallback.
-    // trail-solo-grafo: only 'hermes' is permitted as a non-claude agent;
-    // gemini, antigravity, cursor, codex etc. are excluded (capa eliminada).
+    // `ids` is already resolved and limited to the supported agents, so hosts
+    // init is always driven by an explicit list — never by its own detection
+    // fallback. Claude Code is handled above; Hermes is the only other host the
+    // fork wires (its AGENTS.md section and its skill under ~/.hermes/skills).
     const others = ids.filter((id) => id === "hermes");
     if (others.length > 0) {
       const r = runHostsInit(repo, {
@@ -1577,7 +1594,7 @@ function wireTarget(
 /** Group a retraction report by host, so the output reads as "what leaves each agent". */
 function formatRetractions(rs: Retraction[], apply: boolean): string {
   const hit = changed(rs);
-  if (hit.length === 0) return "· nothing to remove: no graft wiring found here";
+  if (hit.length === 0) return inBrand("· nothing to remove: no graft wiring found here");
   const verb = apply ? "removed" : "would remove";
   const lines: string[] = [];
   const byHost = new Map<string, Retraction[]>();
@@ -1613,7 +1630,7 @@ grouped(program.command("init"), GROUP.setup)
     ? "Wire trail into your agents: AGENTS.md, .trail/ directory and Hermes skill"
     : "Wire Graft into the AI coding agents used with this repo")
   .argument("[dir]", "target repo directory", ".")
-  .option("--agents <ids...>", "agent ids to wire (claude, cursor, codex, opencode, gemini, antigravity, agents)")
+  .option("--agents <ids...>", "agent ids to wire (claude, hermes)")
   .option("--all-agents", "wire every supported agent")
   .option("--list-agents", "print the supported agent ids and exit")
   .option("--no-build", "skip the graph build (wire only)")
